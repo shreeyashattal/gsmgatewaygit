@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useCallback } from 'react';
 import { CallState, SipStatus, GsmStatus, LogEntry, GatewayConfig, ActiveCall, BackendMetrics } from './types';
 import { ICONS, APP_VERSION } from './constants';
@@ -39,6 +38,13 @@ const App: React.FC = () => {
     daemon.terminateCall(slot, 'USER_REQUEST');
   };
 
+  // Function to request root and initialize hardware
+  const verifyRoot = async () => {
+    // Force a reload which triggers the native bridge init again
+    // In a real app, you might want a more direct way to retry init
+    window.location.reload();
+  };
+
   return (
     <div className="flex flex-col min-h-screen bg-[#050505] text-gray-200 font-sans selection:bg-blue-500 selection:text-white relative">
       
@@ -56,7 +62,7 @@ const App: React.FC = () => {
               </p>
             </div>
             <button 
-              onClick={() => window.location.reload()}
+              onClick={verifyRoot}
               className="px-10 py-4 bg-white text-black font-black text-[9px] uppercase tracking-[0.4em] rounded-2xl active:scale-95 transition-all shadow-2xl"
             >
               Verify SU Access

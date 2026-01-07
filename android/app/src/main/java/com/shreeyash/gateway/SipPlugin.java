@@ -17,20 +17,18 @@ public class SipPlugin extends Plugin {
     
     private static final String TAG = "SipPlugin";
     private PjsipService pjsipService;
-    private TrunkAccount trunkAccount;
+    private Account account;
     private String localIp = "";
     
     @Override
     public void load() {
         super.load();
-        Log.d(TAG, "SipPlugin loaded - TRUNK MODE");
+        Log.d(TAG, "SipPlugin loaded");
         
-        // Start PJSIP service
         Context context = getContext();
         Intent serviceIntent = new Intent(context, PjsipService.class);
         context.startService(serviceIntent);
         
-        // Wait for service initialization
         try {
             Thread.sleep(1000);
         } catch (InterruptedException e) {
@@ -41,11 +39,16 @@ public class SipPlugin extends Plugin {
     }
     
     @PluginMethod
-    public void startTrunk(PluginCall call) {
-        Integer port = call.getInt("port", 5060);
-        String pbxIp = call.getString("pbxIp"); // Optional: specific PBX IP to accept calls from
-        
-        Log.d(TAG, "Starting SIP trunk on port " + port);
+    public void start(PluginCall call) {
+        String mode = call.getString("mode", "SERVER"); 
+        String sipServer = call.getString("sipServer");
+        Integer sipPort = call.getInt("sipPort", 5060);
+        String sipUser = call.getString("sipUser");
+        String sipPass = call.getString("sipPass");
+        Integer regExpiry = call.getInt("regExpiry", 3600);
+        String codec = call.getString("codec", "PCMU"); // Receive codec preference
+
+        Log.d(TAG, "Starting SIP Service in " + mode + " mode. Preferred Codec: " + codec);
         
         new Thread(() -> {
             try {
@@ -54,65 +57,70 @@ public class SipPlugin extends Plugin {
                     return;
                 }
                 
-                // Get local IP
+                // Update codec priority based on config
+                pjsipService.updateCodecPriority(codec);
+                
                 localIp = getDeviceLocalIp();
                 
-                // Create trunk account (accepts calls, no registration)
                 AccountConfig accCfg = new AccountConfig();
-                
-                // Use local IP as identity (no registration needed)
-                String sipUri = "sip:" + localIp + ":" + port;
-                accCfg.setIdUri(sipUri);
-                
-                // No registrar (peer trunk mode)
-                accCfg.getRegConfig().setRegisterOnAdd(false);
-                
-                // Allow all incoming calls (or restrict to PBX IP if provided)
-                // No auth credentials needed for peer trunk
-                
-                // Media settings
+                String idUri;
+                String registrarUri;
+
+                if ("CLIENT".equals(mode)) {
+                    idUri = "sip:" + sipUser + "@" + sipServer;
+                    registrarUri = "sip:" + sipServer + ":" + sipPort;
+                    
+                    accCfg.setIdUri(idUri);
+                    accCfg.getRegConfig().setRegistrarUri(registrarUri);
+                    accCfg.getRegConfig().setRegisterOnAdd(true);
+                    accCfg.getRegConfig().setTimeoutSec(regExpiry);
+                    
+                    AuthCredInfo cred = new AuthCredInfo("digest", "*", sipUser, 0, sipPass);
+                    accCfg.getSipConfig().getAuthCreds().add(cred);
+                    
+                } else {
+                    idUri = "sip:" + localIp + ":" + sipPort;
+                    accCfg.setIdUri(idUri);
+                    accCfg.getRegConfig().setRegisterOnAdd(false);
+                }
+
                 accCfg.getVideoConfig().setAutoTransmitOutgoing(false);
                 accCfg.getVideoConfig().setAutoShowIncoming(false);
+                accCfg.getNatConfig().setIceEnabled(false); 
                 
-                // Network settings
-                accCfg.getNatConfig().setIceEnabled(false); // Not needed for local network
-                
-                // Create account
-                if (trunkAccount != null) {
+                if (account != null) {
                     try {
-                        trunkAccount.delete();
+                        account.delete();
                     } catch (Exception e) {
-                        Log.w(TAG, "Error deleting old trunk: " + e.getMessage());
+                        Log.w(TAG, "Error deleting old account: " + e.getMessage());
                     }
                 }
                 
-                trunkAccount = new TrunkAccount(this);
-                trunkAccount.create(accCfg);
+                account = new SipAccount(this);
+                account.create(accCfg);
                 
-                Log.d(TAG, "SIP trunk started: " + sipUri);
+                Log.d(TAG, "SIP Account created: " + idUri);
                 
                 JSObject ret = new JSObject();
                 ret.put("success", true);
-                ret.put("sipUri", sipUri);
+                ret.put("sipUri", idUri);
                 ret.put("localIp", localIp);
-                ret.put("port", port);
-                ret.put("message", "Trunk ready. Configure Grandstream to peer with: " + localIp + ":" + port);
                 call.resolve(ret);
                 
             } catch (Exception e) {
-                Log.e(TAG, "Failed to start trunk: " + e.getMessage(), e);
-                call.reject("Failed to start trunk: " + e.getMessage());
+                Log.e(TAG, "Failed to start SIP: " + e.getMessage(), e);
+                call.reject("Failed to start SIP: " + e.getMessage());
             }
         }).start();
     }
     
     @PluginMethod
-    public void stopTrunk(PluginCall call) {
+    public void stop(PluginCall call) {
         new Thread(() -> {
             try {
-                if (trunkAccount != null) {
-                    trunkAccount.delete();
-                    trunkAccount = null;
+                if (account != null) {
+                    account.delete();
+                    account = null;
                     
                     JSObject ret = new JSObject();
                     ret.put("success", true);
@@ -121,15 +129,15 @@ public class SipPlugin extends Plugin {
                     call.resolve();
                 }
             } catch (Exception e) {
-                Log.e(TAG, "Error stopping trunk: " + e.getMessage());
-                call.reject("Failed to stop trunk: " + e.getMessage());
+                Log.e(TAG, "Error stopping SIP: " + e.getMessage());
+                call.reject("Failed to stop SIP: " + e.getMessage());
             }
         }).start();
     }
     
     @PluginMethod
     public void makeCall(PluginCall call) {
-        String destination = call.getString("destination"); // e.g., "sip:1000@192.168.1.100"
+        String destination = call.getString("destination"); 
         
         if (destination == null) {
             call.reject("Destination required");
@@ -138,13 +146,12 @@ public class SipPlugin extends Plugin {
         
         new Thread(() -> {
             try {
-                if (trunkAccount == null) {
-                    call.reject("Trunk not started");
+                if (account == null) {
+                    call.reject("SIP Account not started");
                     return;
                 }
                 
-                // Make outbound call to PBX (when GSM receives call)
-                Call outCall = new Call(trunkAccount);
+                Call outCall = new Call(account);
                 CallOpParam prm = new CallOpParam(true);
                 outCall.makeCall(destination, prm);
                 
@@ -178,28 +185,6 @@ public class SipPlugin extends Plugin {
         }).start();
     }
     
-    @PluginMethod
-    public void getStatus(PluginCall call) {
-        new Thread(() -> {
-            try {
-                JSObject ret = new JSObject();
-                
-                if (trunkAccount != null) {
-                    AccountInfo info = trunkAccount.getInfo();
-                    ret.put("active", true);
-                    ret.put("uri", info.getUri());
-                    ret.put("localIp", localIp);
-                } else {
-                    ret.put("active", false);
-                }
-                
-                call.resolve(ret);
-            } catch (Exception e) {
-                call.reject("Failed to get status: " + e.getMessage());
-            }
-        }).start();
-    }
-    
     private String getDeviceLocalIp() {
         try {
             java.util.Enumeration<java.net.NetworkInterface> networkInterfaces = 
@@ -223,18 +208,15 @@ public class SipPlugin extends Plugin {
         return "127.0.0.1";
     }
     
-    // Called when PBX sends call to trunk
-    public void onIncomingCallFromPbx(Call incomingCall, String callerNumber, String calledNumber) {
-        Log.d(TAG, "Incoming call from PBX: " + callerNumber + " -> " + calledNumber);
+    public void onIncomingCall(Call incomingCall, String callerNumber, String calledNumber) {
+        Log.d(TAG, "Incoming call: " + callerNumber + " -> " + calledNumber);
         
-        // Notify JavaScript layer to place GSM call
         JSObject data = new JSObject();
-        data.put("type", "incomingFromPbx");
+        data.put("type", "incoming");
         data.put("caller", callerNumber);
         data.put("called", calledNumber);
         notifyListeners("sipCallReceived", data);
         
-        // Auto-answer the SIP call (bridge will be established after GSM connects)
         try {
             CallOpParam prm = new CallOpParam();
             prm.setStatusCode(pjsip_status_code.PJSIP_SC_OK);
@@ -245,12 +227,11 @@ public class SipPlugin extends Plugin {
     }
 }
 
-// Trunk Account - accepts incoming calls
-class TrunkAccount extends Account {
-    private static final String TAG = "TrunkAccount";
+class SipAccount extends Account {
+    private static final String TAG = "SipAccount";
     private SipPlugin plugin;
     
-    public TrunkAccount(SipPlugin plugin) {
+    public SipAccount(SipPlugin plugin) {
         this.plugin = plugin;
     }
     
@@ -265,20 +246,27 @@ class TrunkAccount extends Account {
             
             Log.d(TAG, "Incoming SIP call from: " + remoteUri + " to: " + localUri);
             
-            // Extract numbers from SIP URIs
             String caller = extractNumber(remoteUri);
             String called = extractNumber(localUri);
             
-            // Notify plugin
-            plugin.onIncomingCallFromPbx(call, caller, called);
+            plugin.onIncomingCall(call, caller, called);
             
         } catch (Exception e) {
             Log.e(TAG, "Error handling incoming call: " + e.getMessage(), e);
         }
     }
+
+    @Override
+    public void onRegState(OnRegStateParam prm) {
+        try {
+            AccountInfo ai = getInfo();
+            Log.d(TAG, "Registration state: " + ai.getRegIsActive() + " code: " + prm.getCode());
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
     
     private String extractNumber(String sipUri) {
-        // Extract number from sip:1000@192.168.1.100 -> 1000
         try {
             if (sipUri.contains("sip:")) {
                 String temp = sipUri.substring(sipUri.indexOf("sip:") + 4);

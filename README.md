@@ -9,16 +9,18 @@
 
 ## 📡 Project Overview
 
-This application serves as a high-performance **Dual-SIM GSM-to-SIP Gateway**. It is designed to run on rooted Android hardware (simulated environment) to bridge cellular voice calls to VoIP networks (PBX).
+This application serves as a high-performance **Dual-SIM GSM-to-SIP Gateway**. It bridges cellular voice calls to VoIP networks (PBX) using rooted Android hardware.
 
 ### 🚀 Key Capabilities
 
 *   **Dual-SIM Multiplexing**: Intelligent routing handling two active SIM cards simultaneously.
-*   **Kernel-Level Audio Bridge**: Simulates low-latency PCM audio routing via ALSA/TinyMix integration (`NativeBridge`).
-*   **SIP Trunking**:
-    *   **Server Mode**: Listens on a local port for PBX registrations (Static IP Trunking).
-    *   **Client Mode**: Registers explicitly to a remote SIP Proxy.
-*   **PJSIP Signaling Stack**: Custom TypeScript implementation of SIP state machine (INVITE, REGISTER, BYE, ACK, 401 Auth).
+*   **Kernel-Level Audio Bridge**: Low-latency PCM audio routing via ALSA/TinyMix integration (`NativeBridge`).
+*   **Native SIP Stack (PJSIP)**:
+    *   **Robust Signaling**: Uses PJSIP (C++) for standards-compliant SIP handling (INVITE, REGISTER, AUTH).
+    *   **Codec Support**: G.711 PCMU/PCMA, G.722 (Wideband), and OPUS.
+    *   **Modes**:
+        *   **Server Mode**: Listens for incoming trunk connections from PBX.
+        *   **Client Mode**: Registers to an external SIP Proxy/PBX.
 *   **Adaptive Jitter Buffer**: Real-time audio metrics monitoring (Latency, Jitter, Packet Loss).
 *   **AI Diagnostics**: Integration with Google Gemini Flash for log analysis and heuristic troubleshooting.
 
@@ -29,20 +31,22 @@ This application serves as a high-performance **Dual-SIM GSM-to-SIP Gateway**. I
 The system is composed of several high-performance modules:
 
 1.  **GatewayDaemon**: The central nervous system managing state, config persistence, and event dispatching.
-2.  **SipStack**: Handles complex SIP signaling scenarios including authentication challenges and re-registration.
-3.  **AudioEngine**: Simulates the real-time RTP stream processing loop with jitter correction.
-4.  **NativeBridge**: Hardware Abstraction Layer (HAL) interfacing with Qualcomm/MediaTek modem commands via `su`.
+2.  **SipStack**: TypeScript controller that bridges to the native PJSIP layer.
+3.  **PjsipService (Native)**: Android Service running the PJSIP stack for reliable background signaling.
+4.  **AudioEngine**: Manages real-time metrics and bridge status.
+5.  **NativeBridge**: Hardware Abstraction Layer (HAL) interfacing with Qualcomm/MediaTek modem commands via `su`.
 
 ---
 
 ## 📦 Deployment & Build
 
-This project is built using **Vite** + **React 19**.
+This project is built using **Vite** + **React 19** + **Capacitor**.
 
 ### Prerequisites
 
 *   Node.js v18+
-*   NPM
+*   Android Studio
+*   Java JDK 17
 
 ### Installation
 
@@ -66,25 +70,11 @@ Run the gateway dashboard locally:
 npm run dev
 ```
 
-### Production Build
-
-To generate the optimized production artifacts:
-
-```bash
-npm run build
-```
-
-The output will be in the `dist/` directory, ready to be deployed to a web server or wrapped in a WebView container.
-
 ---
 
 ## 📱 Building the Android APK
 
 This project uses **Capacitor** to wrap the web application into a native Android APK.
-
-### Prerequisites for APK Build
-*   **Android Studio** installed on your machine.
-*   **Java/JDK 17** installed.
 
 ### Steps to Generate APK
 
@@ -93,34 +83,26 @@ This project uses **Capacitor** to wrap the web application into a native Androi
     npm run build
     ```
 
-2.  **Initialize Android Platform**:
-    ```bash
-    npx cap add android
-    ```
-
-3.  **Sync Web Assets to Android**:
+2.  **Sync Web Assets to Android**:
     ```bash
     npx cap sync
     ```
 
-4.  **Open Android Studio**:
+3.  **Open Android Studio**:
     ```bash
     npx cap open android
     ```
 
-5.  **Build APK**:
-    *   **Wait for Gradle Sync**: When Android Studio opens, look at the bottom status bar. Wait until the indexing and Gradle Sync processes are complete. The "Build" menu will be incomplete until this finishes.
-    *   **If Sync Fails/Doesn't Start**: Go to `File` > `Sync Project with Gradle Files`.
-    *   Once synced: Go to `Build` > `Build Bundle(s) / APK(s)` > `Build APK(s)`.
+4.  **Build APK**:
+    *   Wait for Gradle Sync to complete.
+    *   Go to `Build` > `Build Bundle(s) / APK(s)` > `Build APK(s)`.
     *   The APK will be generated in `android/app/build/outputs/apk/debug/app-debug.apk`.
 
 ---
 
-## ⚠️ Hardware Requirements (Simulation)
+## ⚠️ Hardware Requirements
 
-While this dashboard runs in a browser, the underlying logic assumes:
-
-*   **Root Access**: Required for `tinymix` and `service call telephony` commands.
+*   **Root Access**: **REQUIRED** for `tinymix` audio routing and `service call telephony` commands.
 *   **SoC**: Optimized for Qualcomm Snapdragon (sdm/msm) chipsets.
 *   **Network**: Static LAN IP recommended for SIP Server mode.
 

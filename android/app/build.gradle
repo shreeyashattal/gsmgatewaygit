@@ -26,12 +26,21 @@ android {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
+    
+    packagingOptions {
+        pickFirst 'lib/x86/libpjsua2.so'
+        pickFirst 'lib/x86_64/libpjsua2.so'
+        pickFirst 'lib/armeabi-v7a/libpjsua2.so'
+        pickFirst 'lib/arm64-v8a/libpjsua2.so'
+    }
 }
 
 repositories {
     flatDir{
         dirs '../capacitor-cordova-android-plugins/src/main/libs', 'libs'
     }
+    mavenCentral()
+    maven { url 'https://jitpack.io' }
 }
 
 dependencies {
@@ -45,8 +54,10 @@ dependencies {
     androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
     implementation project(':capacitor-cordova-android-plugins')
     
-    // PJSIP DEPENDENCIES - ADDED FOR SIP TRUNK
-    implementation 'com.github.VoiSmart:pjsip-android:v2.13'
+    // PJSIP DEPENDENCIES
+    // Using net.gotev:sip-service from Maven Central which is reliable
+    // This includes the PJSIP native libraries and Java wrappers
+    implementation 'net.gotev:sip-service:1.7.0'
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'
 }
 

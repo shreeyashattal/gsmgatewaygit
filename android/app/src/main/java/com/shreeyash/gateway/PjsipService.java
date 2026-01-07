@@ -34,7 +34,7 @@ public class PjsipService extends Service {
         
         new Thread(() -> {
             try {
-                Log.d(TAG, "Initializing PJSIP for TRUNK mode...");
+                Log.d(TAG, "Initializing PJSIP...");
                 
                 // Load PJSIP native library
                 System.loadLibrary("pjsua2");
@@ -54,39 +54,21 @@ public class PjsipService extends Service {
                 
                 // Configure User Agent
                 UaConfig uaConfig = epConfig.getUaConfig();
-                uaConfig.setUserAgent("GSM-SIP-Trunk/1.0");
-                uaConfig.setMaxCalls(4); // Support multiple simultaneous calls
+                uaConfig.setUserAgent("GSM-SIP-Gateway/2.4.0");
+                uaConfig.setMaxCalls(4); 
                 
-                // Configure media for GSM bridge
+                // Configure media
                 MediaConfig mediaConfig = epConfig.getMediaConfig();
-                mediaConfig.setClockRate(8000); // Standard for telephony
-                mediaConfig.setSndClockRate(8000);
-                mediaConfig.setQuality(6); // Higher quality for trunk
-                mediaConfig.setEcTailLen(200); // Echo cancellation
-                mediaConfig.setNoVad(false); // Voice Activity Detection
-                
-                // Enable specific codecs for Grandstream compatibility
-                mediaConfig.setChannelCount(1); // Mono audio
+                mediaConfig.setClockRate(16000); // 16kHz for Wideband support (G722)
+                mediaConfig.setSndClockRate(16000);
+                mediaConfig.setQuality(8); 
+                mediaConfig.setEcTailLen(200); 
+                mediaConfig.setNoVad(false);
+                mediaConfig.setChannelCount(1);
                 
                 endpoint.libInit(epConfig);
                 
-                // Configure codecs - prioritize G.711
-                CodecInfoVector2 codecs = endpoint.codecEnum2();
-                for (int i = 0; i < codecs.size(); i++) {
-                    CodecInfo codec = codecs.get(i);
-                    String codecId = codec.getCodecId();
-                    
-                    // Enable G.711 codecs (best for GSM bridge)
-                    if (codecId.contains("PCMU") || codecId.contains("PCMA")) {
-                        endpoint.codecSetPriority(codecId, (short) 255); // Highest priority
-                        Log.d(TAG, "Enabled codec: " + codecId);
-                    } else {
-                        // Disable other codecs for simplicity
-                        endpoint.codecSetPriority(codecId, (short) 0);
-                    }
-                }
-                
-                // Create UDP transport for SIP trunk
+                // Create UDP transport for SIP
                 TransportConfig tcfg = new TransportConfig();
                 tcfg.setPort(sipPort);
                 
@@ -94,12 +76,10 @@ public class PjsipService extends Service {
                     endpoint.transportCreate(pjsip_transport_type_e.PJSIP_TRANSPORT_UDP, tcfg);
                     Log.d(TAG, "UDP transport created on port " + sipPort);
                 } catch (Exception e) {
-                    // Try random port if 5060 is taken
                     Log.w(TAG, "Port 5060 unavailable, trying random port");
                     tcfg.setPort(0);
                     endpoint.transportCreate(pjsip_transport_type_e.PJSIP_TRANSPORT_UDP, tcfg);
                     
-                    // Get actual port assigned
                     TransportInfoVector transports = endpoint.transportEnum();
                     if (transports.size() > 0) {
                         TransportInfo ti = transports.get(0);
@@ -111,14 +91,54 @@ public class PjsipService extends Service {
                 // Start the library
                 endpoint.libStart();
                 
+                // Set default codec priorities (Enable all common ones, prioritize G711)
+                updateCodecPriority("PCMU"); 
+                
                 isInitialized = true;
-                Log.d(TAG, "PJSIP initialized successfully in TRUNK mode on port " + sipPort);
+                Log.d(TAG, "PJSIP initialized successfully on port " + sipPort);
                 
             } catch (Exception e) {
                 Log.e(TAG, "Failed to initialize PJSIP: " + e.getMessage(), e);
                 isInitialized = false;
             }
         }).start();
+    }
+    
+    public void updateCodecPriority(String preferredCodec) {
+        if (endpoint == null) return;
+        
+        try {
+            Log.d(TAG, "Updating codec priorities. Preferred: " + preferredCodec);
+            CodecInfoVector2 codecs = endpoint.codecEnum2();
+            
+            for (int i = 0; i < codecs.size(); i++) {
+                CodecInfo codec = codecs.get(i);
+                String codecId = codec.getCodecId(); // e.g., "PCMU/8000/1"
+                short priority = 0;
+                
+                // Map config names to PJSIP codec IDs
+                boolean isMatch = false;
+                if (preferredCodec.equals("PCMU") && codecId.contains("PCMU")) isMatch = true;
+                else if (preferredCodec.equals("PCMA") && codecId.contains("PCMA")) isMatch = true;
+                else if (preferredCodec.equals("G722") && codecId.contains("G722")) isMatch = true;
+                else if (preferredCodec.equals("OPUS") && codecId.contains("opus")) isMatch = true;
+                
+                if (isMatch) {
+                    priority = 255; // Highest
+                } else if (codecId.contains("PCMU") || codecId.contains("PCMA")) {
+                    priority = 128; // Fallback
+                } else if (codecId.contains("G722") || codecId.contains("opus")) {
+                    priority = 120; // High quality fallback
+                } else {
+                    priority = 0; // Disable others
+                }
+                
+                endpoint.codecSetPriority(codecId, priority);
+                if (priority > 0) Log.d(TAG, "Codec " + codecId + " priority set to " + priority);
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to update codec priority: " + e.getMessage());
+        }
     }
     
     public Endpoint getEndpoint() {
@@ -138,23 +158,20 @@ public class PjsipService extends Service {
         if (!isInitialized) {
             initializePjsip();
         }
-        return START_STICKY; // Keep service running
+        return START_STICKY; 
     }
     
     @Override
     public void onDestroy() {
         super.onDestroy();
         
-        // Cleanup PJSIP
         new Thread(() -> {
             try {
                 if (endpoint != null && isInitialized) {
-                    Log.d(TAG, "Shutting down PJSIP trunk...");
                     endpoint.libDestroy();
                     endpoint.delete();
                     endpoint = null;
                     isInitialized = false;
-                    Log.d(TAG, "PJSIP shutdown complete");
                 }
             } catch (Exception e) {
                 Log.e(TAG, "Error shutting down PJSIP: " + e.getMessage());
