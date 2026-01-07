@@ -40,6 +40,12 @@
                 <action android:name="com.shreeyash.gateway.INCOMING_CALL" />
             </intent-filter>
         </receiver>
+        
+        <!-- PJSIP SERVICE - ADDED FOR SIP TRUNK -->
+        <service
+            android:name=".PjsipService"
+            android:enabled="true"
+            android:exported="false" />
 
     </application>
 
@@ -59,4 +65,9 @@
     <uses-feature android:name="android.software.sip.voip" android:required="false" />
     <uses-feature android:name="android.hardware.wifi" android:required="false" />
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
+    
+    <!-- PJSIP PERMISSIONS - ADDED FOR SIP TRUNK -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
 </manifest>
