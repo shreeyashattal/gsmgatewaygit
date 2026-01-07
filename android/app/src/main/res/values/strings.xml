@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Shreeyash GSM-SIP Gateway</string>
+    <string name="title_activity_main">Shreeyash GSM-SIP Gateway</string>
+    <string name="package_name">com.shreeyash.gateway</string>
+    <string name="custom_url_scheme">com.shreeyash.gateway</string>
+</resources>

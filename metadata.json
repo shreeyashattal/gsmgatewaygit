@@ -1,0 +1,7 @@
+{
+  "name": "Shreeyash GSM-SIP Gateway",
+  "description": "Enterprise-grade GSM ↔ SIP trunking gateway for rooted Android. Features PJSIP-integrated signaling, root-level audio bridging, and AI-driven telemetry diagnostics.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
