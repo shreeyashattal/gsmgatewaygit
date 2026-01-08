@@ -24,24 +24,10 @@
 # PJSIP RULES - ADDED FOR SIP TRUNK
 # ============================================================================
 
-# Keep all PJSIP classes (native JNI interface)
--keep class org.pjsip.pjsua2.** { *; }
--keepclassmembers class org.pjsip.pjsua2.** { *; }
 
 # Keep native methods
 -keepclasseswithmembernames class * {
     native <methods>;
-}
-
-# Keep PJSIP callbacks and listeners
--keepclassmembers class * extends org.pjsip.pjsua2.Account {
-    public protected *;
-}
--keepclassmembers class * extends org.pjsip.pjsua2.Call {
-    public protected *;
-}
--keepclassmembers class * extends org.pjsip.pjsua2.Endpoint {
-    public protected *;
 }
 
 # Prevent obfuscation of classes used by PJSIP

@@ -10,7 +10,7 @@ interface SipPluginInterface {
     sipPass: string; 
     regExpiry: number;
     codec: string;
-  }): Promise<{ success: boolean; sipUri: string; localIp: string }>;
+  }): Promise<{ success: boolean; sipUri: string; localIp: string; actualPort?: number }>;
   
   stop(): Promise<{ success: boolean }>;
   
@@ -83,7 +83,15 @@ export class SipStack {
       });
 
       if (result.success) {
-        this.log(`SIP_CORE: Service Started. URI: ${result.sipUri}, IP: ${result.localIp}`);
+        let msg = `SIP_CORE: Service Started. URI: ${result.sipUri}, IP: ${result.localIp}`;
+        if (result.actualPort) {
+            msg += `, ListenPort: ${result.actualPort}`;
+            // If the port is different from config, log a warning
+            if (result.actualPort !== config.sipPort) {
+                this.log(`WARN: Requested port ${config.sipPort} was unavailable. Bound to ${result.actualPort} instead.`);
+            }
+        }
+        this.log(msg);
         
         if (config.mode === 'SERVER') {
           this.setStatus(SipStatus.LISTENING, 3600);
