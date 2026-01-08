@@ -24,14 +24,12 @@ android {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
-    
+
     packagingOptions {
-        // Ensure we handle native libraries correctly
         pickFirst 'lib/x86/libpjsua2.so'
         pickFirst 'lib/x86_64/libpjsua2.so'
         pickFirst 'lib/armeabi-v7a/libpjsua2.so'
         pickFirst 'lib/arm64-v8a/libpjsua2.so'
-        // Exclude potential duplicate metadata
         exclude 'META-INF/DEPENDENCIES'
         exclude 'META-INF/LICENSE'
         exclude 'META-INF/LICENSE.txt'
@@ -44,13 +42,10 @@ android {
 }
 
 repositories {
-    flatDir{
-        dirs '../capacitor-cordova-android-plugins/src/main/libs', 'libs'
-    }
-    // PRIORITIZE JITPACK for PJSIP
-    maven { url 'https://jitpack.io' }
     google()
     mavenCentral()
+    // Remove or comment out JitPack since it's not working
+    // maven { url 'https://jitpack.io' }
 }
 
 dependencies {
@@ -63,11 +58,10 @@ dependencies {
     androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
     androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
     implementation project(':capacitor-cordova-android-plugins')
-    
-    // PJSIP DEPENDENCIES - Using VoiSmart 1.8 (The "Old Reliable" public build)
-    // This version is known to be stable and publicly accessible on JitPack.
-    implementation 'com.github.VoiSmart:pjsip-android:1.8'
-    
+
+    // ✅ WORKING PJSIP from Maven Central
+    implementation 'com.pjdroid:pjdroid:2.2.4'
+
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'
 }
 
