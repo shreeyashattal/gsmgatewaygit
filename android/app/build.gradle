@@ -11,8 +11,6 @@ android {
         versionName "1.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
-             // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
-             // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
             ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
@@ -28,10 +26,20 @@ android {
     }
     
     packagingOptions {
+        // Ensure we handle native libraries correctly
         pickFirst 'lib/x86/libpjsua2.so'
         pickFirst 'lib/x86_64/libpjsua2.so'
         pickFirst 'lib/armeabi-v7a/libpjsua2.so'
         pickFirst 'lib/arm64-v8a/libpjsua2.so'
+        // Exclude potential duplicate metadata
+        exclude 'META-INF/DEPENDENCIES'
+        exclude 'META-INF/LICENSE'
+        exclude 'META-INF/LICENSE.txt'
+        exclude 'META-INF/license.txt'
+        exclude 'META-INF/NOTICE'
+        exclude 'META-INF/NOTICE.txt'
+        exclude 'META-INF/notice.txt'
+        exclude 'META-INF/ASL2.0'
     }
 }
 
@@ -39,8 +47,10 @@ repositories {
     flatDir{
         dirs '../capacitor-cordova-android-plugins/src/main/libs', 'libs'
     }
-    mavenCentral()
+    // PRIORITIZE JITPACK for PJSIP
     maven { url 'https://jitpack.io' }
+    google()
+    mavenCentral()
 }
 
 dependencies {
@@ -54,10 +64,10 @@ dependencies {
     androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
     implementation project(':capacitor-cordova-android-plugins')
     
-    // PJSIP DEPENDENCIES
-    // Using net.gotev:sip-service from Maven Central which is reliable
-    // This includes the PJSIP native libraries and Java wrappers
-    implementation 'net.gotev:sip-service:1.7.0'
+    // PJSIP DEPENDENCIES - Using VoiSmart 1.8 (The "Old Reliable" public build)
+    // This version is known to be stable and publicly accessible on JitPack.
+    implementation 'com.github.VoiSmart:pjsip-android:1.8'
+    
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'
 }
 
