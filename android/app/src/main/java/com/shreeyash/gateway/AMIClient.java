@@ -18,10 +18,18 @@ import java.util.concurrent.LinkedBlockingQueue;
 public class AMIClient {
     private static final String TAG = "AMIClient";
     
-    private static final String AMI_HOST = "127.0.0.1";
-    private static final int AMI_PORT = 5038;
-    private static final String AMI_USERNAME = "gateway";
-    private static final String AMI_SECRET = "gatewaypw123";  // CHANGE THIS!
+    // Use Config class instead of hardcoding
+    private final String amiHost;
+    private final int amiPort;
+    private final String amiUsername;
+    private final String amiSecret;
+    
+    public AMIClient() {
+        this.amiHost = Config.AMI_HOST;
+        this.amiPort = Config.AMI_PORT;
+        this.amiUsername = Config.AMI_USERNAME;
+        this.amiSecret = Config.AMI_SECRET;
+    }
     
     private Socket socket;
     private BufferedReader reader;
@@ -39,7 +47,7 @@ public class AMIClient {
     
     public boolean connect() {
         try {
-            socket = new Socket(AMI_HOST, AMI_PORT);
+            socket = new Socket(amiHost, amiPort);
             reader = new BufferedReader(new InputStreamReader(socket.getInputStream()));
             writer = new BufferedWriter(new OutputStreamWriter(socket.getOutputStream()));
             
@@ -85,8 +93,8 @@ public class AMIClient {
     
     private boolean login() throws Exception {
         sendAction("Login",
-            "Username", AMI_USERNAME,
-            "Secret", AMI_SECRET
+            "Username", amiUsername,
+            "Secret", amiSecret
         );
         
         String response = responseQueue.take();
