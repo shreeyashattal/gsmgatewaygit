@@ -1,5 +1,5 @@
 import { ProcessorType, GsmStatus } from '../types';
-import { registerPlugin } from '@capacitor/core';
+import { registerPlugin, Capacitor } from '@capacitor/core';
 
 interface ShellPlugin {
   execute(options: { command: string, asRoot: boolean }): Promise<{ output: string, exitCode: number, error?: string }>;
@@ -10,8 +10,46 @@ interface TelephonyPlugin {
   requestPermissions(): Promise<{ granted: boolean }>;
 }
 
-const Shell = registerPlugin<ShellPlugin>('Shell');
-const Telephony = registerPlugin<TelephonyPlugin>('Telephony');
+// Plugin registration with fallback for browser mode
+let Shell: ShellPlugin;
+let Telephony: TelephonyPlugin;
+
+// #region agent log
+fetch('http://127.0.0.1:7242/ingest/89dc02bd-def5-4814-a81b-220fad0c0c0e',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'NativeBridge.ts:15',message:'About to register Shell plugin',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'initial',hypothesisId:'H3'})}).catch(()=>{});
+// #endregion
+try {
+  Shell = registerPlugin<ShellPlugin>('Shell');
+  // #region agent log
+  fetch('http://127.0.0.1:7242/ingest/89dc02bd-def5-4814-a81b-220fad0c0c0e',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'NativeBridge.ts:17',message:'Shell plugin registered successfully',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'initial',hypothesisId:'H3'})}).catch(()=>{});
+  // #endregion
+} catch (e) {
+  // #region agent log
+  fetch('http://127.0.0.1:7242/ingest/89dc02bd-def5-4814-a81b-220fad0c0c0e',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'NativeBridge.ts:19',message:'Shell plugin registration failed, using mock',data:{error:String(e)},timestamp:Date.now(),sessionId:'debug-session',runId:'initial',hypothesisId:'H3'})}).catch(()=>{});
+  // #endregion
+  console.warn('[NATIVE_BRIDGE] Shell plugin not available (browser mode), using mock implementation');
+  Shell = {
+    execute: async () => ({ output: '', exitCode: 1, error: 'Shell plugin not available in browser mode' })
+  };
+}
+
+// #region agent log
+fetch('http://127.0.0.1:7242/ingest/89dc02bd-def5-4814-a81b-220fad0c0c0e',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'NativeBridge.ts:24',message:'About to register Telephony plugin',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'initial',hypothesisId:'H3'})}).catch(()=>{});
+// #endregion
+try {
+  Telephony = registerPlugin<TelephonyPlugin>('Telephony');
+  // #region agent log
+  fetch('http://127.0.0.1:7242/ingest/89dc02bd-def5-4814-a81b-220fad0c0c0e',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'NativeBridge.ts:26',message:'Telephony plugin registered successfully',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'initial',hypothesisId:'H3'})}).catch(()=>{});
+  // #endregion
+} catch (e) {
+  // #region agent log
+  fetch('http://127.0.0.1:7242/ingest/89dc02bd-def5-4814-a81b-220fad0c0c0e',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'NativeBridge.ts:28',message:'Telephony plugin registration failed, using mock',data:{error:String(e)},timestamp:Date.now(),sessionId:'debug-session',runId:'initial',hypothesisId:'H3'})}).catch(()=>{});
+  // #endregion
+  console.warn('[NATIVE_BRIDGE] Telephony plugin not available (browser mode), using mock implementation');
+  Telephony = {
+    getSimInfo: async () => ({ sims: [], slotCount: 0 }),
+    requestPermissions: async () => ({ granted: false })
+  };
+}
 
 export class NativeBridge {
   private static onGsmDisconnectCallback?: (slot: 0 | 1) => void;
@@ -20,19 +58,47 @@ export class NativeBridge {
   private static rootStatusCached: boolean | null = null; // Cache root status to avoid repeated checks
 
   static async initHardware(): Promise<{ isRooted: boolean; soc: ProcessorType; slotCount: number; simInfo: any[] }> {
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/89dc02bd-def5-4814-a81b-220fad0c0c0e',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'NativeBridge.ts:45',message:'initHardware started',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'initial',hypothesisId:'H3'})}).catch(()=>{});
+    // #endregion
     try {
+      // Check if we're running in browser mode (not native Capacitor app)
+      const isBrowserMode = !Capacitor.isNativePlatform();
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/89dc02bd-def5-4814-a81b-220fad0c0c0e',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'NativeBridge.ts:48',message:'Platform check result',data:{isNativePlatform:Capacitor.isNativePlatform(),isBrowserMode},timestamp:Date.now(),sessionId:'debug-session',runId:'initial',hypothesisId:'H3'})}).catch(()=>{});
+      // #endregion
+
+      if (isBrowserMode) {
+        console.log("[NATIVE_BRIDGE] Running in browser mode - native hardware access disabled");
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/89dc02bd-def5-4814-a81b-220fad0c0c0e',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'NativeBridge.ts:50',message:'Returning browser mode defaults',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'initial',hypothesisId:'H3'})}).catch(()=>{});
+        // #endregion
+        return {
+          isRooted: false,
+          soc: 'GENERIC',
+          slotCount: 1,
+          simInfo: [{
+            carrier: 'Browser Mode',
+            status: GsmStatus.NOT_DETECTED,
+            radioSignal: -110,
+            phoneNumber: '',
+            connectionType: 'Tower'
+          }]
+        };
+      }
+
       // Check root status only once and cache it
       if (this.rootStatusCached === null) {
         console.log("[NATIVE_BRIDGE] Checking Root Access (one-time check)...");
         const idResult = await this.executeRootCommand('id', true); // true = initial check
         const isRooted = idResult.includes('uid=0');
         this.rootStatusCached = isRooted;
-        
+
         if (!isRooted) {
             console.warn("[NATIVE_BRIDGE] Root check failed. App will run in RESTRICTED mode.");
             console.warn("[NATIVE_BRIDGE] If Magisk prompt appeared, please grant SuperUser access and reload the app.");
             // Do NOT return fake root. Return actual status.
-            return { isRooted: false, soc: 'GENERIC', slotCount: 1, simInfo: [] }; 
+            return { isRooted: false, soc: 'GENERIC', slotCount: 1, simInfo: [] };
         }
       }
       
@@ -170,6 +236,18 @@ export class NativeBridge {
   }
 
   static async executeRootCommand(cmd: string, isInitialCheck: boolean = false): Promise<string> {
+    // If running in browser mode, return mock data
+    if (!Capacitor.isNativePlatform()) {
+      console.log(`[MOCK_ROOT_SHELL] Browser mode: simulating '${cmd}'`);
+      if (cmd === 'id') return "uid=0(root) gid=0(root)";
+      if (cmd.includes('ro.telephony.default_network')) return "9,9";
+      if (cmd.includes('gsm.sim.operator.alpha')) return "Jio 5G,Airtel";
+      if (cmd.includes('gsm.sim.state')) return "READY,READY";
+      if (cmd.includes('ro.board.platform')) return "generic";
+      if (cmd.includes('getprop')) return "mock_value";
+      return "OK";
+    }
+
     try {
         // If root is already cached as false and this is not the initial check, skip root commands
         if (!isInitialCheck && this.rootStatusCached === false) {
@@ -224,7 +302,7 @@ export class NativeBridge {
     }
   }
 
-  static async setAudioRouting(slot: 0 | 1, mode: 'COMMUNICATION' | 'IN_CALL'): Promise<void> {
+  static async setAudioRouting(slot: 0 | 1, mode: 'COMMUNICATION' | 'IN_CALL' | 'ASTERISK_BRIDGE'): Promise<void> {
     const simId = slot + 1;
     if (mode === 'IN_CALL') {
       console.log(`[AUDIO_HAL] Engaging High-Priority Bridge [SoC: ${this.currentSoC}, Slot: ${simId}]`);
@@ -233,12 +311,35 @@ export class NativeBridge {
         await this.executeRootCommand(`tinymix 'AFE_LOOPBACK_RX' 'Voice Tx'`);
         await this.executeRootCommand(`tinymix 'Voice Call' '1'`);
       } else if (this.currentSoC === 'MEDIATEK') {
-          await this.executeRootCommand(`tinymix 'DL1_2' '1'`); 
-          await this.executeRootCommand(`tinymix 'UL1_2' '1'`); 
+          await this.executeRootCommand(`tinymix 'DL1_2' '1'`);
+          await this.executeRootCommand(`tinymix 'UL1_2' '1'`);
       }
-      
+
       await this.executeRootCommand(`chmod 0666 /dev/snd/pcmC0D*`);
-      
+
+    } else if (mode === 'ASTERISK_BRIDGE') {
+      console.log(`[AUDIO_HAL] Setting up Asterisk Bridge [SoC: ${this.currentSoC}, Slot: ${simId}]`);
+
+      // Route GSM audio to ALSA loopback for Asterisk
+      if (this.currentSoC === 'QUALCOMM') {
+        // Route GSM RX to loopback TX (what we hear goes to Asterisk)
+        await this.executeRootCommand(`tinymix 'Voice Rx' 'AFE_LOOPBACK_TX'`);
+        // Route loopback RX to GSM TX (what Asterisk plays goes to caller)
+        await this.executeRootCommand(`tinymix 'AFE_LOOPBACK_RX' 'Voice Tx'`);
+        await this.executeRootCommand(`tinymix 'Voice Call' '1'`);
+      } else if (this.currentSoC === 'MEDIATEK') {
+        // Similar routing for MediaTek
+        await this.executeRootCommand(`tinymix 'DL1_2' '1'`);
+        await this.executeRootCommand(`tinymix 'UL1_2' '1'`);
+      }
+
+      // Ensure Asterisk can access audio devices
+      await this.executeRootCommand(`chmod 0666 /dev/snd/*`);
+      await this.executeRootCommand(`chown asterisk:asterisk /dev/snd/* 2>/dev/null || true`);
+
+      // Load ALSA loopback module if not already loaded
+      await this.executeRootCommand(`modprobe snd-aloop 2>/dev/null || true`);
+
     } else {
       console.log(`[AUDIO_HAL] Resetting SIM${simId} audio path.`);
       if (this.currentSoC === 'QUALCOMM') {
@@ -263,5 +364,23 @@ export class NativeBridge {
 
   static setGsmDisconnectListener(callback: (slot: 0 | 1) => void) {
     this.onGsmDisconnectCallback = callback;
+  }
+
+  private static onGsmIncomingCallCallback?: (slot: 0 | 1, phoneNumber: string) => void;
+
+  static setGsmIncomingCallListener(callback: (slot: 0 | 1, phoneNumber: string) => void) {
+    this.onGsmIncomingCallCallback = callback;
+  }
+
+  // Method for Asterisk to request outgoing GSM call
+  static async makeGsmCallForAsterisk(slot: 0 | 1, phoneNumber: string): Promise<boolean> {
+    console.log(`[GSM_OUTBOUND] Asterisk requested GSM call to ${phoneNumber} on slot ${slot}`);
+    try {
+      await this.dialGsmSilently(slot, phoneNumber);
+      return true;
+    } catch (e) {
+      console.error(`[GSM_OUTBOUND] Failed to dial ${phoneNumber}:`, e);
+      return false;
+    }
   }
 }

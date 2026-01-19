@@ -11,9 +11,48 @@ import java.io.DataOutputStream;
 import java.io.InputStreamReader;
 import java.io.IOException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.CountDownLatch;
 
 @CapacitorPlugin(name = "Shell")
 public class ShellPlugin extends Plugin {
+
+    /**
+     * Wait for a process to complete with a timeout (API level 24 compatible)
+     * @param process The process to wait for
+     * @param timeoutSeconds Maximum time to wait in seconds
+     * @return true if process completed within timeout, false if timed out
+     */
+    private boolean waitForProcessWithTimeout(Process process, int timeoutSeconds) {
+        final CountDownLatch latch = new CountDownLatch(1);
+        final boolean[] processFinished = {false};
+
+        // Start a thread to wait for the process
+        Thread waitThread = new Thread(() -> {
+            try {
+                process.waitFor();
+                processFinished[0] = true;
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } finally {
+                latch.countDown();
+            }
+        });
+        waitThread.start();
+
+        try {
+            // Wait for either the process to finish or timeout
+            boolean finished = latch.await(timeoutSeconds, TimeUnit.SECONDS);
+            if (!finished) {
+                // Timeout occurred, interrupt the waiting thread
+                waitThread.interrupt();
+                return false;
+            }
+            return processFinished[0];
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
+    }
 
     @PluginMethod
     public void echo(PluginCall call) {
@@ -75,8 +114,9 @@ public class ShellPlugin extends Plugin {
                 
                 // Wait for process with timeout (30 seconds for root commands, 10 for regular)
                 // This gives time for Magisk prompt to appear and user to approve
-                boolean finished = process.waitFor(asRoot ? 30 : 10, TimeUnit.SECONDS);
-                
+                // Using manual timeout for API level 24 compatibility
+                boolean finished = waitForProcessWithTimeout(process, asRoot ? 30 : 10);
+
                 if (!finished) {
                     process.destroyForcibly();
                     call.reject("Command execution timeout. Root permission may not have been granted. Please check Magisk.");
@@ -107,10 +147,7 @@ public class ShellPlugin extends Plugin {
                 }
                 
                 call.resolve(ret);
-                
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                call.reject("Command execution interrupted: " + e.getMessage());
+
             } catch (IOException e) {
                 if (asRoot) {
                     // If su command itself fails, device might not be rooted or su not available

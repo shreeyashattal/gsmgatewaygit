@@ -34,13 +34,7 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths"></meta-data>
         </provider>
-        
-        <receiver android:name=".IncomingCallReceiver" android:label="Call Receiver" android:exported="true">
-             <intent-filter>
-                <action android:name="com.shreeyash.gateway.INCOMING_CALL" />
-            </intent-filter>
-        </receiver>
-        
+
         <!-- PJSIP SERVICE - ADDED FOR SIP TRUNK -->
         <service
             android:name=".PjsipService"
@@ -58,6 +52,7 @@
     <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.CALL_PHONE" />
     <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />

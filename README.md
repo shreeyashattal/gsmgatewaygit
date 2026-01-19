@@ -9,20 +9,21 @@
 
 ## 📡 Project Overview
 
-This application serves as a high-performance **Dual-SIM GSM-to-SIP Gateway**. It bridges cellular voice calls to VoIP networks (PBX) using rooted Android hardware.
+This application serves as a high-performance **Dual-SIM GSM-to-Asterisk Bridge**. It bridges cellular voice calls to Asterisk PBX running locally on rooted Android hardware.
 
 ### 🚀 Key Capabilities
 
 *   **Dual-SIM Multiplexing**: Intelligent routing handling two active SIM cards simultaneously.
-*   **Kernel-Level Audio Bridge**: Low-latency PCM audio routing via ALSA/TinyMix integration (`NativeBridge`).
-*   **Native SIP Stack (PJSIP)**:
-    *   **Robust Signaling**: Uses PJSIP (C++) for standards-compliant SIP handling (INVITE, REGISTER, AUTH).
-    *   **Codec Support**: G.711 PCMU/PCMA, G.722 (Wideband), and OPUS.
-    *   **Modes**:
-        *   **Server Mode**: Listens for incoming trunk connections from PBX.
-        *   **Client Mode**: Registers to an external SIP Proxy/PBX.
-*   **Adaptive Jitter Buffer**: Real-time audio metrics monitoring (Latency, Jitter, Packet Loss).
-*   **AI Diagnostics**: Integration with Google Gemini Flash for log analysis and heuristic troubleshooting.
+*   **Kernel-Level Audio Bridge**: Low-latency PCM audio routing via ALSA/TinyMix integration between GSM modem and Asterisk.
+*   **Asterisk Integration**:
+    *   **HTTP API Communication**: RESTful API for Asterisk dialplan integration.
+    *   **Event-Driven Architecture**: Real-time call state synchronization between GSM and Asterisk.
+    *   **Local PBX Support**: Optimized for Asterisk running on the same Android device.
+*   **Intelligent Call Routing**:
+    *   **Incoming GSM**: Auto-answer and bridge to Asterisk dialplan.
+    *   **Outgoing GSM**: Asterisk-triggered GSM calls via API.
+*   **Real-Time Audio Bridging**: Direct ALSA loopback between GSM baseband and Asterisk audio streams.
+*   **AI Diagnostics**: Integration with Google Gemini Flash for log analysis and troubleshooting.
 
 ---
 
@@ -31,10 +32,11 @@ This application serves as a high-performance **Dual-SIM GSM-to-SIP Gateway**. I
 The system is composed of several high-performance modules:
 
 1.  **GatewayDaemon**: The central nervous system managing state, config persistence, and event dispatching.
-2.  **SipStack**: TypeScript controller that bridges to the native PJSIP layer.
-3.  **PjsipService (Native)**: Android Service running the PJSIP stack for reliable background signaling.
-4.  **AudioEngine**: Manages real-time metrics and bridge status.
+2.  **AsteriskBridge**: TypeScript service communicating with local Asterisk PBX via HTTP API.
+3.  **AsteriskAPI**: RESTful HTTP server for Asterisk dialplan integration and call control.
+4.  **AudioEngine**: Manages real-time audio bridging metrics between GSM and Asterisk streams.
 5.  **NativeBridge**: Hardware Abstraction Layer (HAL) interfacing with Qualcomm/MediaTek modem commands via `su`.
+6.  **Asterisk PBX**: Runs locally on Android device handling all VoIP signaling and routing.
 
 ---
 
@@ -47,6 +49,8 @@ This project is built using **Vite** + **React 19** + **Capacitor**.
 *   Node.js v18+
 *   Android Studio
 *   Java JDK 17
+*   **Asterisk PBX** installed and running on the Android device
+*   Root access for hardware control
 
 ### Installation
 
@@ -103,8 +107,9 @@ This project uses **Capacitor** to wrap the web application into a native Androi
 ## ⚠️ Hardware Requirements
 
 *   **Root Access**: **REQUIRED** for `tinymix` audio routing and `service call telephony` commands.
-*   **SoC**: Optimized for Qualcomm Snapdragon (sdm/msm) chipsets.
-*   **Network**: Static LAN IP recommended for SIP Server mode.
+*   **Asterisk**: Must be installed and configured on the Android device.
+*   **SoC**: Optimized for Qualcomm Snapdragon (sdm/msm) chipsets with ALSA audio support.
+*   **Network**: Local loopback communication with Asterisk (127.0.0.1).
 
 ---
 

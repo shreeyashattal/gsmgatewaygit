@@ -5,9 +5,19 @@ import Dashboard from './components/Dashboard';
 import Settings from './components/Settings';
 import Logs from './components/Logs';
 import CallView from './components/CallView';
-import AIAssistant from './components/AIAssistant';
 import ModemDebugger from './components/ModemDebugger';
+
+// #region agent log
+fetch('http://127.0.0.1:7242/ingest/89dc02bd-def5-4814-a81b-220fad0c0c0e',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.tsx:1',message:'App component imports loaded',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'initial',hypothesisId:'H1'})}).catch(()=>{});
+// #endregion
+
+// #region agent log
+fetch('http://127.0.0.1:7242/ingest/89dc02bd-def5-4814-a81b-220fad0c0c0e',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.tsx:9',message:'About to import GatewayDaemon',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'initial',hypothesisId:'H2'})}).catch(()=>{});
+// #endregion
 import { daemon } from './services/GatewayDaemon';
+// #region agent log
+fetch('http://127.0.0.1:7242/ingest/89dc02bd-def5-4814-a81b-220fad0c0c0e',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.tsx:10',message:'GatewayDaemon import successful',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'initial',hypothesisId:'H2'})}).catch(()=>{});
+// #endregion
 
 type Tab = 'status' | 'trunks' | 'radio' | 'logs';
 
@@ -87,7 +97,7 @@ const App: React.FC = () => {
         
         <div className="flex gap-1.5">
             {[0, 1].map(i => (
-              <div key={i} className={`w-2 h-2 rounded-full border border-black/50 ${daemon.state.sipStatuses[i] === SipStatus.REGISTERED || daemon.state.sipStatuses[i] === SipStatus.LISTENING ? 'bg-blue-500 shadow-[0_0_10px_rgba(59,130,246,0.8)]' : 'bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.4)]'}`} />
+              <div key={i} className={`w-2 h-2 rounded-full border border-black/50 ${daemon.state.sipStatuses[i] === SipStatus.REGISTERED ? 'bg-green-500 shadow-[0_0_10px_rgba(34,197,94,0.8)]' : 'bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.4)]'}`} />
             ))}
         </div>
       </header>
@@ -113,7 +123,6 @@ const App: React.FC = () => {
                 ))}
               </div>
               <Dashboard />
-              <AIAssistant logs={logs} metrics={metrics} />
             </div>
           )}
 
@@ -140,7 +149,7 @@ const App: React.FC = () => {
       {/* Floating Tactical Navigation */}
       <nav className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-[#0c0c0c]/80 backdrop-blur-2xl border border-white/10 p-1.5 flex gap-1 rounded-[28px] shadow-[0_20px_50px_rgba(0,0,0,0.8)] z-50">
         <NavButton active={activeTab === 'status'} onClick={() => setActiveTab('status')} label="Dash" icon={<ICONS.Activity />} />
-        <NavButton active={activeTab === 'trunks'} onClick={() => setActiveTab('trunks')} label="Trunks" icon={<ICONS.Cog />} />
+        <NavButton active={activeTab === 'trunks'} onClick={() => setActiveTab('trunks')} label="Bridges" icon={<ICONS.Cog />} />
         <NavButton active={activeTab === 'radio'} onClick={() => setActiveTab('radio')} label="Radio" icon={<ICONS.Signal />} />
         <NavButton active={activeTab === 'logs'} onClick={() => setActiveTab('logs')} label="Journal" icon={<ICONS.Phone />} />
       </nav>

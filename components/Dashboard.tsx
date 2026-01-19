@@ -85,22 +85,22 @@ const Dashboard: React.FC = () => {
                   </div>
 
                   <div className="bg-white/[0.03] border border-white/5 rounded-2xl p-4 flex flex-col justify-between h-20">
-                    <p className="text-[8px] font-black text-gray-500 uppercase tracking-widest">Connection</p>
+                    <p className="text-[8px] font-black text-gray-500 uppercase tracking-widest">Asterisk Bridge</p>
                     <div className="flex items-center gap-2">
-                       {simMetrics.connectionType === 'VoWiFi' ? (
+                       {trunk.serviceActive ? (
                          <>
-                           <ICONS.Wifi className="text-blue-400 w-4 h-4" />
-                           <span className="text-[10px] font-black text-blue-400">VoWiFi HD</span>
+                           <ICONS.Activity className="text-green-400 w-4 h-4" />
+                           <span className="text-[10px] font-black text-green-400">READY</span>
                          </>
                        ) : (
                          <>
-                           <ICONS.Tower className="text-gray-400 w-4 h-4" />
-                           <span className="text-[10px] font-black text-gray-400">CELLULAR</span>
+                           <ICONS.Cog className="text-gray-400 w-4 h-4" />
+                           <span className="text-[10px] font-black text-gray-400">INACTIVE</span>
                          </>
                        )}
                     </div>
                     <p className={`text-[9px] font-black tracking-widest uppercase ${isActive ? 'text-gray-300' : 'text-gray-600'}`}>
-                      {isActive ? sipStatuses[slot] : 'OFFLINE'}
+                      {isActive ? 'CONNECTED' : 'OFFLINE'}
                     </p>
                   </div>
                 </div>

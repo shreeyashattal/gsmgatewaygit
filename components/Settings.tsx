@@ -20,10 +20,10 @@ const Settings: React.FC<SettingsProps> = ({ config, setConfig }) => {
 
   return (
     <div className="space-y-8 pb-32">
-      <div className="bg-blue-500/5 border border-blue-500/20 rounded-3xl p-6">
-        <h2 className="text-xs font-black text-blue-400 uppercase tracking-widest mb-2">Network Logic</h2>
+      <div className="bg-green-500/5 border border-green-500/20 rounded-3xl p-6">
+        <h2 className="text-xs font-black text-green-400 uppercase tracking-widest mb-2">GSM ↔ Asterisk Bridge</h2>
         <p className="text-[10px] text-gray-500 leading-relaxed italic">
-          This app is optimized for <strong>Static IP Trunking</strong>. Point your UCM6300 PBX to the listen addresses defined below. Ensure your Android device has a static IP in your LAN.
+          This bridge connects GSM calls to <strong>Asterisk PBX</strong> running locally on your Android device. Configure Asterisk dialplan to call the bridge API for outbound GSM calls. Ensure Asterisk is properly configured with appropriate codecs and trunks.
         </p>
       </div>
 
@@ -51,29 +51,9 @@ const Settings: React.FC<SettingsProps> = ({ config, setConfig }) => {
             
             <div className="p-6 space-y-6">
               
-              <div className="grid grid-cols-2 gap-6 mb-4">
-                 <div className="col-span-2 flex items-center gap-4">
-                    <span className="text-[9px] text-gray-500 font-bold uppercase w-24">Operation Mode</span>
-                    <div className="flex bg-black border border-white/10 rounded-lg p-1">
-                        <button 
-                            onClick={() => handleTrunkChange(slot as 0 | 1, 'mode', 'SERVER')}
-                            className={`px-4 py-1.5 rounded-md text-[9px] font-black uppercase transition-all ${trunk.mode === 'SERVER' ? 'bg-blue-600 text-white' : 'text-gray-500 hover:text-white'}`}
-                        >
-                            Server (Listen)
-                        </button>
-                        <button 
-                            onClick={() => handleTrunkChange(slot as 0 | 1, 'mode', 'CLIENT')}
-                            className={`px-4 py-1.5 rounded-md text-[9px] font-black uppercase transition-all ${trunk.mode === 'CLIENT' ? 'bg-blue-600 text-white' : 'text-gray-500 hover:text-white'}`}
-                        >
-                            Client (Register)
-                        </button>
-                    </div>
-                 </div>
-              </div>
-
               <div className="grid grid-cols-3 gap-6">
                 <div className="col-span-2">
-                  <InputGroup label={trunk.mode === 'SERVER' ? "Listen IP (Device IP)" : "Remote Proxy (PBX IP)"}>
+                  <InputGroup label="Default SIP Destination">
                     <input 
                       type="text" 
                       value={trunk.sipServer}
@@ -82,7 +62,7 @@ const Settings: React.FC<SettingsProps> = ({ config, setConfig }) => {
                     />
                   </InputGroup>
                 </div>
-                <InputGroup label="Port">
+                <InputGroup label="Bridge API Port">
                   <input 
                     type="number" 
                     value={trunk.sipPort}
@@ -93,14 +73,14 @@ const Settings: React.FC<SettingsProps> = ({ config, setConfig }) => {
               </div>
               
               <div className="grid grid-cols-2 gap-6">
-                <InputGroup label="Auth User / Trunk ID">
+                <InputGroup label="Asterisk Context">
                   <input 
                     type="text" 
                     value={trunk.sipUser}
                     onChange={(e) => handleTrunkChange(slot as 0 | 1, 'sipUser', e.target.value)}
                     className="w-full bg-black border border-white/10 rounded-2xl p-3 text-xs font-mono outline-none focus:border-blue-500"
                   />
-                </InputGroup>
+                </InputGrop>
                 <InputGroup label="Auth Password">
                   <input 
                     type="password" 
