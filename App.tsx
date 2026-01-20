@@ -1,31 +1,21 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { CallState, SipStatus, GsmStatus, LogEntry, GatewayConfig, ActiveCall, BackendMetrics } from './types';
+import { CallState, BridgeStatus, LogEntry, GatewayConfig, ActiveCall, BackendMetrics } from './types';
 import { ICONS, APP_VERSION } from './constants';
 import Dashboard from './components/Dashboard';
 import Settings from './components/Settings';
 import Logs from './components/Logs';
 import CallView from './components/CallView';
 import ModemDebugger from './components/ModemDebugger';
-
-// #region agent log
-fetch('http://127.0.0.1:7242/ingest/89dc02bd-def5-4814-a81b-220fad0c0c0e',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.tsx:1',message:'App component imports loaded',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'initial',hypothesisId:'H1'})}).catch(()=>{});
-// #endregion
-
-// #region agent log
-fetch('http://127.0.0.1:7242/ingest/89dc02bd-def5-4814-a81b-220fad0c0c0e',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.tsx:9',message:'About to import GatewayDaemon',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'initial',hypothesisId:'H2'})}).catch(()=>{});
-// #endregion
 import { daemon } from './services/GatewayDaemon';
-// #region agent log
-fetch('http://127.0.0.1:7242/ingest/89dc02bd-def5-4814-a81b-220fad0c0c0e',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.tsx:10',message:'GatewayDaemon import successful',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'initial',hypothesisId:'H2'})}).catch(()=>{});
-// #endregion
 
-type Tab = 'status' | 'trunks' | 'radio' | 'logs';
+type Tab = 'status' | 'config' | 'radio' | 'logs';
 
 const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<Tab>('status');
   const [metrics, setMetrics] = useState<BackendMetrics>(daemon.state.metrics);
   const [callStates, setCallStates] = useState<[CallState, CallState]>([CallState.IDLE, CallState.IDLE]);
   const [activeCalls, setActiveCalls] = useState<[ActiveCall | null, ActiveCall | null]>([null, null]);
+  const [bridgeStatus, setBridgeStatus] = useState<BridgeStatus>(daemon.state.bridgeStatus);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [config, setConfig] = useState<GatewayConfig>(daemon.state.config);
 
@@ -37,10 +27,12 @@ const App: React.FC = () => {
     daemon.subscribe('state_changed', (state: any) => {
       setCallStates([...state.callStates] as [CallState, CallState]);
       setActiveCalls([...state.activeCalls] as [ActiveCall | null, ActiveCall | null]);
+      setBridgeStatus(state.bridgeStatus);
+      setConfig(state.config);
     });
     daemon.subscribe('new_log', (log: LogEntry) => addLog(log));
     daemon.subscribe('metrics_updated', (newMetrics: BackendMetrics) => {
-      setMetrics({...newMetrics});
+      setMetrics({ ...newMetrics });
     });
   }, [addLog]);
 
@@ -48,16 +40,13 @@ const App: React.FC = () => {
     daemon.terminateCall(slot, 'USER_REQUEST');
   };
 
-  // Function to request root and initialize hardware
   const verifyRoot = async () => {
-    // Force a reload which triggers the native bridge init again
-    // In a real app, you might want a more direct way to retry init
     window.location.reload();
   };
 
   return (
     <div className="flex flex-col min-h-screen bg-[#050505] text-gray-200 font-sans selection:bg-blue-500 selection:text-white relative">
-      
+
       {/* Root Protection Overlay */}
       {!metrics.isRooted && (
         <div className="fixed inset-0 z-[100] bg-black/98 backdrop-blur-3xl flex items-center justify-center p-8 text-center">
@@ -71,7 +60,7 @@ const App: React.FC = () => {
                 Kernel-level audio routing requires <code>su</code>. Please authorize SuperUser access to continue.
               </p>
             </div>
-            <button 
+            <button
               onClick={verifyRoot}
               className="px-10 py-4 bg-white text-black font-black text-[9px] uppercase tracking-[0.4em] rounded-2xl active:scale-95 transition-all shadow-2xl"
             >
@@ -81,31 +70,31 @@ const App: React.FC = () => {
         </div>
       )}
 
-      {/* Modern Compact Header */}
+      {/* Header */}
       <header className="px-6 py-4 border-b border-white/5 flex justify-between items-center bg-[#0a0a0a]/90 backdrop-blur-xl sticky top-0 z-50">
         <div className="flex items-center gap-4">
           <div className="w-8 h-8 bg-white rounded-lg flex items-center justify-center text-black font-black text-sm shadow-xl select-none transition-transform active:scale-90">SG</div>
           <div>
             <h1 className="text-[11px] font-black tracking-widest uppercase text-white">Shreeyash Gateway</h1>
             <div className="flex items-center gap-2 mt-0.5">
-               <span className="text-[7px] font-black text-blue-500 tracking-widest uppercase">V{APP_VERSION}</span>
-               <div className="w-0.5 h-0.5 bg-white/20 rounded-full" />
-               <span className="text-[7px] text-gray-600 font-mono uppercase tracking-widest">KERNEL-SYNC: OK</span>
+              <span className="text-[7px] font-black text-blue-500 tracking-widest uppercase">V{APP_VERSION}</span>
+              <div className="w-0.5 h-0.5 bg-white/20 rounded-full" />
+              <span className="text-[7px] text-gray-600 font-mono uppercase tracking-widest">AMI BRIDGE</span>
             </div>
           </div>
         </div>
-        
-        <div className="flex gap-1.5">
-            {[0, 1].map(i => (
-              <div key={i} className={`w-2 h-2 rounded-full border border-black/50 ${daemon.state.sipStatuses[i] === SipStatus.REGISTERED ? 'bg-green-500 shadow-[0_0_10px_rgba(34,197,94,0.8)]' : 'bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.4)]'}`} />
-            ))}
+
+        {/* AMI Status Indicator */}
+        <div className="flex items-center gap-2">
+          <div className={`w-2 h-2 rounded-full ${bridgeStatus === BridgeStatus.CONNECTED ? 'bg-green-500 shadow-[0_0_10px_rgba(34,197,94,0.8)]' : bridgeStatus === BridgeStatus.CONNECTING ? 'bg-yellow-500 animate-pulse' : 'bg-red-500'}`} />
+          <span className="text-[8px] font-black text-gray-500 uppercase">AMI</span>
         </div>
       </header>
 
       {/* Main Content Area */}
       <main className="flex-1 overflow-y-auto p-4 sm:p-6 pb-28">
         <div className="max-w-4xl mx-auto space-y-6">
-          
+
           {activeTab === 'status' && (
             <div className="animate-in fade-in duration-500 space-y-6">
               {/* Call Monitoring */}
@@ -113,10 +102,10 @@ const App: React.FC = () => {
                 {[0, 1].map((slot) => (
                   callStates[slot] !== CallState.IDLE && (
                     <div key={slot} className="animate-in slide-in-from-top-4 duration-500">
-                      <CallView 
-                        call={activeCalls[slot]} 
-                        state={callStates[slot]} 
-                        onHangup={() => handleHangup(slot as 0 | 1)} 
+                      <CallView
+                        call={activeCalls[slot]}
+                        state={callStates[slot]}
+                        onHangup={() => handleHangup(slot as 0 | 1)}
                       />
                     </div>
                   )
@@ -126,7 +115,7 @@ const App: React.FC = () => {
             </div>
           )}
 
-          {activeTab === 'trunks' && (
+          {activeTab === 'config' && (
             <div className="animate-in slide-in-from-right-4 duration-500">
               <Settings config={config} setConfig={setConfig} />
             </div>
@@ -140,26 +129,26 @@ const App: React.FC = () => {
 
           {activeTab === 'logs' && (
             <div className="bg-[#0a0a0a] rounded-[28px] border border-white/5 p-6 min-h-[500px] shadow-2xl overflow-hidden animate-in fade-in duration-500">
-                <Logs logs={logs} />
+              <Logs logs={logs} />
             </div>
           )}
         </div>
       </main>
 
-      {/* Floating Tactical Navigation */}
+      {/* Floating Navigation */}
       <nav className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-[#0c0c0c]/80 backdrop-blur-2xl border border-white/10 p-1.5 flex gap-1 rounded-[28px] shadow-[0_20px_50px_rgba(0,0,0,0.8)] z-50">
         <NavButton active={activeTab === 'status'} onClick={() => setActiveTab('status')} label="Dash" icon={<ICONS.Activity />} />
-        <NavButton active={activeTab === 'trunks'} onClick={() => setActiveTab('trunks')} label="Bridges" icon={<ICONS.Cog />} />
-        <NavButton active={activeTab === 'radio'} onClick={() => setActiveTab('radio')} label="Radio" icon={<ICONS.Signal />} />
-        <NavButton active={activeTab === 'logs'} onClick={() => setActiveTab('logs')} label="Journal" icon={<ICONS.Phone />} />
+        <NavButton active={activeTab === 'config'} onClick={() => setActiveTab('config')} label="Config" icon={<ICONS.Cog />} />
+        <NavButton active={activeTab === 'radio'} onClick={() => setActiveTab('radio')} label="Modem" icon={<ICONS.Signal />} />
+        <NavButton active={activeTab === 'logs'} onClick={() => setActiveTab('logs')} label="Logs" icon={<ICONS.Phone />} />
       </nav>
     </div>
   );
 };
 
 const NavButton: React.FC<{ active: boolean; onClick: () => void; label: string; icon: React.ReactNode }> = ({ active, onClick, label, icon }) => (
-  <button 
-    onClick={onClick} 
+  <button
+    onClick={onClick}
     className={`relative group flex flex-col items-center justify-center gap-1 w-14 h-12 rounded-[22px] transition-all duration-300 ${active ? 'bg-white text-black shadow-xl scale-105' : 'text-gray-500 hover:text-gray-300 hover:bg-white/5'}`}
   >
     {active && (

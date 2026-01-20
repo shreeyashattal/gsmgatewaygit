@@ -1,4 +1,4 @@
-package com.gsmgateway;
+package com.shreeyash.gateway;
 
 import android.content.BroadcastReceiver;
 import android.content.Context;
@@ -123,14 +123,12 @@ public class CallReceiver extends BroadcastReceiver {
     }
     
     private int getCallState(String state) {
-        switch (state) {
-            case TelephonyManager.EXTRA_STATE_RINGING:
-                return TelephonyManager.CALL_STATE_RINGING;
-            case TelephonyManager.EXTRA_STATE_OFFHOOK:
-                return TelephonyManager.CALL_STATE_OFFHOOK;
-            case TelephonyManager.EXTRA_STATE_IDLE:
-            default:
-                return TelephonyManager.CALL_STATE_IDLE;
+        if (TelephonyManager.EXTRA_STATE_RINGING.equals(state)) {
+            return TelephonyManager.CALL_STATE_RINGING;
+        } else if (TelephonyManager.EXTRA_STATE_OFFHOOK.equals(state)) {
+            return TelephonyManager.CALL_STATE_OFFHOOK;
+        } else {
+            return TelephonyManager.CALL_STATE_IDLE;
         }
     }
     

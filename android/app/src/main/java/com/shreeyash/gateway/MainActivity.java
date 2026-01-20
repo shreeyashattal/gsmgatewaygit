@@ -1,4 +1,4 @@
-package com.gsmgateway;
+package com.shreeyash.gateway;
 
 import android.Manifest;
 import android.content.Intent;
@@ -8,153 +8,137 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.PowerManager;
 import android.provider.Settings;
-import android.widget.Button;
-import android.widget.TextView;
+import android.util.Log;
 import android.widget.Toast;
 
-import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 
+import com.getcapacitor.BridgeActivity;
+
+import java.util.ArrayList;
+import java.util.List;
+
 /**
- * Simple setup activity to request permissions and start service
- * Once configured, this app runs headless via the service
+ * Main activity - Capacitor bridge with permission handling and service start
  */
-public class MainActivity extends AppCompatActivity {
+public class MainActivity extends BridgeActivity {
+    private static final String TAG = "MainActivity";
     private static final int PERMISSION_REQUEST = 1000;
-    private static final int OVERLAY_PERMISSION_REQUEST = 1001;
-    
-    private TextView statusText;
-    private Button startButton;
-    private Button stopButton;
-    
-    private String[] requiredPermissions = {
-        Manifest.permission.READ_PHONE_STATE,
-        Manifest.permission.CALL_PHONE,
-        Manifest.permission.ANSWER_PHONE_CALLS,
-        Manifest.permission.READ_CALL_LOG,
-        Manifest.permission.RECORD_AUDIO,
-        Manifest.permission.MODIFY_AUDIO_SETTINGS
-    };
-    
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        // Register Capacitor plugins BEFORE super.onCreate
+        registerPlugin(ShellPlugin.class);
+        registerPlugin(TelephonyPlugin.class);
+        registerPlugin(GsmBridgePlugin.class);
+
         super.onCreate(savedInstanceState);
-        setContentView(R.layout.activity_main);
-        
-        statusText = findViewById(R.id.statusText);
-        startButton = findViewById(R.id.startButton);
-        stopButton = findViewById(R.id.stopButton);
-        
-        startButton.setOnClickListener(v -> startGateway());
-        stopButton.setOnClickListener(v -> stopGateway());
-        
-        updateStatus();
-    }
-    
-    private void updateStatus() {
-        StringBuilder status = new StringBuilder("GSM Gateway Status\n\n");
-        
-        // Check permissions
-        boolean allGranted = true;
-        for (String permission : requiredPermissions) {
-            boolean granted = ContextCompat.checkSelfPermission(this, permission) 
-                == PackageManager.PERMISSION_GRANTED;
-            allGranted &= granted;
-            status.append(permission.substring(permission.lastIndexOf('.') + 1))
-                .append(": ")
-                .append(granted ? "✓" : "✗")
-                .append("\n");
-        }
-        
-        // Check battery optimization
-        PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
-        boolean batteryOptimized = true;
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            batteryOptimized = !pm.isIgnoringBatteryOptimizations(getPackageName());
-        }
-        status.append("\nBattery Optimization: ")
-            .append(batteryOptimized ? "Enabled (needs disable)" : "Disabled ✓")
-            .append("\n");
-        
-        status.append("\n");
-        if (allGranted && !batteryOptimized) {
-            status.append("Ready to start!\n\n");
-            status.append("Phone Configuration:\n");
-            status.append("• Keep phone plugged in\n");
-            status.append("• Disable screen timeout\n");
-            status.append("• Enable 'Do Not Disturb'\n");
-            status.append("• Ensure Asterisk is running\n");
-            startButton.setEnabled(true);
+
+        // Request permissions on startup
+        if (!hasAllPermissions()) {
+            requestAllPermissions();
         } else {
-            status.append("Click 'Request Permissions'\n");
-            status.append("Then click 'Start Gateway'\n");
-            startButton.setEnabled(false);
+            onAllPermissionsGranted();
         }
-        
-        statusText.setText(status.toString());
-    }
-    
-    public void requestPermissions(android.view.View view) {
-        // Request runtime permissions
-        ActivityCompat.requestPermissions(this, requiredPermissions, PERMISSION_REQUEST);
-        
+
         // Request battery optimization exemption
+        requestBatteryOptimizationExemption();
+    }
+
+    private String[] getRequiredPermissions() {
+        List<String> permissions = new ArrayList<>();
+        permissions.add(Manifest.permission.READ_PHONE_STATE);
+        permissions.add(Manifest.permission.CALL_PHONE);
+        permissions.add(Manifest.permission.ANSWER_PHONE_CALLS);
+        permissions.add(Manifest.permission.READ_CALL_LOG);
+        permissions.add(Manifest.permission.RECORD_AUDIO);
+        permissions.add(Manifest.permission.MODIFY_AUDIO_SETTINGS);
+
+        // Android 13+ requires READ_PHONE_NUMBERS for phone number access
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            permissions.add(Manifest.permission.READ_PHONE_NUMBERS);
+            permissions.add(Manifest.permission.POST_NOTIFICATIONS);
+        }
+
+        return permissions.toArray(new String[0]);
+    }
+
+    private boolean hasAllPermissions() {
+        for (String permission : getRequiredPermissions()) {
+            if (ContextCompat.checkSelfPermission(this, permission)
+                != PackageManager.PERMISSION_GRANTED) {
+                Log.d(TAG, "Missing permission: " + permission);
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private void requestAllPermissions() {
+        Log.i(TAG, "Requesting permissions...");
+        ActivityCompat.requestPermissions(this, getRequiredPermissions(), PERMISSION_REQUEST);
+    }
+
+    private void requestBatteryOptimizationExemption() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            Intent intent = new Intent();
-            intent.setAction(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
-            intent.setData(Uri.parse("package:" + getPackageName()));
-            startActivityForResult(intent, OVERLAY_PERMISSION_REQUEST);
+            PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
+            if (pm != null && !pm.isIgnoringBatteryOptimizations(getPackageName())) {
+                try {
+                    Intent intent = new Intent();
+                    intent.setAction(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
+                    intent.setData(Uri.parse("package:" + getPackageName()));
+                    startActivity(intent);
+                } catch (Exception e) {
+                    Log.e(TAG, "Failed to request battery optimization exemption", e);
+                }
+            }
         }
     }
-    
+
     @Override
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        
+
         if (requestCode == PERMISSION_REQUEST) {
             boolean allGranted = true;
-            for (int result : grantResults) {
-                if (result != PackageManager.PERMISSION_GRANTED) {
+            for (int i = 0; i < grantResults.length; i++) {
+                if (grantResults[i] != PackageManager.PERMISSION_GRANTED) {
                     allGranted = false;
-                    break;
+                    Log.w(TAG, "Permission denied: " + permissions[i]);
                 }
             }
-            
+
             if (allGranted) {
-                Toast.makeText(this, "All permissions granted!", Toast.LENGTH_SHORT).show();
+                Toast.makeText(this, "Permissions granted - starting gateway", Toast.LENGTH_SHORT).show();
+                onAllPermissionsGranted();
             } else {
-                Toast.makeText(this, "Some permissions denied", Toast.LENGTH_SHORT).show();
+                Toast.makeText(this, "Some permissions denied - gateway may not work properly", Toast.LENGTH_LONG).show();
+                // Still try to start, some functionality may work
+                startGatewayService();
             }
-            
-            updateStatus();
         }
     }
-    
-    private void startGateway() {
-        Intent serviceIntent = new Intent(this, GatewayService.class);
-        
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(serviceIntent);
-        } else {
-            startService(serviceIntent);
-        }
-        
-        Toast.makeText(this, "Gateway service started", Toast.LENGTH_SHORT).show();
-        statusText.setText("Gateway Running\n\nService is active in background.\nYou can close this app.\n\nThe service will:\n• Answer incoming GSM calls\n• Forward to Grandstream PBX\n• Accept outgoing calls from PBX\n• Make GSM calls\n\nCheck notification for status.");
-        
-        startButton.setEnabled(false);
-        stopButton.setEnabled(true);
+
+    private void onAllPermissionsGranted() {
+        Log.i(TAG, "All permissions granted");
+        startGatewayService();
     }
-    
-    private void stopGateway() {
-        Intent serviceIntent = new Intent(this, GatewayService.class);
-        stopService(serviceIntent);
-        
-        Toast.makeText(this, "Gateway service stopped", Toast.LENGTH_SHORT).show();
-        updateStatus();
-        
-        startButton.setEnabled(true);
-        stopButton.setEnabled(false);
+
+    private void startGatewayService() {
+        Log.i(TAG, "Starting gateway service");
+
+        try {
+            Intent serviceIntent = new Intent(this, GatewayService.class);
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(serviceIntent);
+            } else {
+                startService(serviceIntent);
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to start gateway service", e);
+            Toast.makeText(this, "Failed to start service: " + e.getMessage(), Toast.LENGTH_LONG).show();
+        }
     }
 }

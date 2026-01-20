@@ -2,19 +2,17 @@ export enum CallState {
   IDLE = 'IDLE',
   INCOMING_GSM = 'INCOMING_GSM',
   OUTGOING_GSM = 'OUTGOING_GSM',
-  INCOMING_SIP = 'INCOMING_SIP',
-  OUTGOING_SIP = 'OUTGOING_SIP',
+  INCOMING_ASTERISK = 'INCOMING_ASTERISK',
+  OUTGOING_ASTERISK = 'OUTGOING_ASTERISK',
   BRIDGING = 'BRIDGING',
   TERMINATING = 'TERMINATING',
   ERROR = 'ERROR'
 }
 
-export enum SipStatus {
-  UNREGISTERED = 'UNREGISTERED',
-  REGISTERING = 'REGISTERING',
-  REGISTERED = 'REGISTERED',
-  LISTENING = 'LISTENING', // For Server Mode
-  REJECTED = 'REJECTED',
+export enum BridgeStatus {
+  DISCONNECTED = 'DISCONNECTED',
+  CONNECTING = 'CONNECTING',
+  CONNECTED = 'CONNECTED',
   ERROR = 'ERROR'
 }
 
@@ -27,7 +25,6 @@ export enum GsmStatus {
 }
 
 export type ProcessorType = 'QUALCOMM' | 'MEDIATEK' | 'EXYNOS' | 'GENERIC';
-export type GatewayRole = 'CLIENT' | 'SERVER';
 
 export interface LogEntry {
   id: string;
@@ -37,37 +34,31 @@ export interface LogEntry {
   message: string;
 }
 
-export interface TrunkConfig {
-  mode: GatewayRole;
-  sipServer: string; // Remote PBX IP or Local Listen Bind
-  sipPort: number;
-  sipUser: string;
-  sipPass: string;
-  sipTrunkName: string;
-  codec: 'PCMU' | 'PCMA' | 'OPUS' | 'G722';
-  regExpiry: number;
+export interface ChannelConfig {
   enabled: boolean;
-  serviceActive: boolean; // Per-SIM toggle
-  stunServer: string;
-  useIce: boolean;
+  asteriskContext: string;      // Dialplan context for incoming GSM calls
+  defaultExtension: string;     // Default extension to dial
+  codec: 'PCMU' | 'PCMA' | 'OPUS' | 'G722';
+  rtpPort: number;              // RTP port for this channel (5004 or 5006)
 }
 
 export interface GatewayConfig {
-  trunks: [TrunkConfig, TrunkConfig];
+  channels: [ChannelConfig, ChannelConfig];
   autoAnswer: boolean;
   rootLevel: boolean;
   jitterBufferMs: number;
   keepAliveInterval: number;
   speakerphoneOn: boolean;
+  // AMI is hardcoded to 127.0.0.1:5038 - no config needed
 }
 
 export interface ActiveCall {
   id: string;
   simSlot: 0 | 1;
   gsmNumber: string;
-  sipAddress: string;
+  asteriskChannel: string;
   startTime: number;
-  direction: 'GSM_TO_SIP' | 'SIP_TO_GSM';
+  direction: 'GSM_TO_ASTERISK' | 'ASTERISK_TO_GSM';
   durationSeconds: number;
   signaling: string[];
   audioMetrics: {
@@ -88,6 +79,7 @@ export interface SimMetrics {
   status: GsmStatus;
   phoneNumber: string;
   connectionType: 'Tower' | 'VoWiFi';
+  networkType: string;  // '5G', 'LTE', '3G+', '3G', '2G', 'WiFi', 'Unknown'
 }
 
 export interface BackendMetrics {
@@ -97,7 +89,7 @@ export interface BackendMetrics {
   sims: [SimMetrics, SimMetrics];
   slotCount: number; // 1 or 2
   uptime: number;
-  regTimeRemaining: [number, number];
   processor: ProcessorType;
   isRooted: boolean;
+  bridgeStatus: BridgeStatus;
 }

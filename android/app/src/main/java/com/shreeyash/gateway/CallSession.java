@@ -1,4 +1,4 @@
-package com.gsmgateway;
+package com.shreeyash.gateway;
 
 /**
  * Tracks the state of a single call session
@@ -9,9 +9,13 @@ public class CallSession {
     private String callerNumber;
     private CallDirection direction;
     private CallState state;
-    private String sipChannel;
+    private String sipCallId;  // SIP Call-ID
+    private String remoteRtpAddress;  // Remote RTP IP
+    private int remoteRtpPort;  // Remote RTP port
     private boolean rtpActive;
     private long startTime;
+    private boolean gsmAnswered;
+    private boolean sipAnswered;
     
     public enum CallDirection {
         INCOMING_GSM,  // GSM call coming in
@@ -36,6 +40,8 @@ public class CallSession {
         this.state = CallState.IDLE;
         this.rtpActive = false;
         this.startTime = System.currentTimeMillis();
+        this.gsmAnswered = false;
+        this.sipAnswered = false;
     }
     
     // Getters and setters
@@ -60,12 +66,28 @@ public class CallSession {
         this.state = state;
     }
     
-    public String getSipChannel() {
-        return sipChannel;
+    public String getSipCallId() {
+        return sipCallId;
     }
-    
-    public void setSipChannel(String sipChannel) {
-        this.sipChannel = sipChannel;
+
+    public void setSipCallId(String sipCallId) {
+        this.sipCallId = sipCallId;
+    }
+
+    public String getRemoteRtpAddress() {
+        return remoteRtpAddress;
+    }
+
+    public void setRemoteRtpAddress(String remoteRtpAddress) {
+        this.remoteRtpAddress = remoteRtpAddress;
+    }
+
+    public int getRemoteRtpPort() {
+        return remoteRtpPort;
+    }
+
+    public void setRemoteRtpPort(int remoteRtpPort) {
+        this.remoteRtpPort = remoteRtpPort;
     }
     
     public boolean isRtpActive() {
@@ -75,7 +97,23 @@ public class CallSession {
     public void setRtpActive(boolean rtpActive) {
         this.rtpActive = rtpActive;
     }
-    
+
+    public boolean isGsmAnswered() {
+        return gsmAnswered;
+    }
+
+    public void setGsmAnswered(boolean gsmAnswered) {
+        this.gsmAnswered = gsmAnswered;
+    }
+
+    public boolean isSipAnswered() {
+        return sipAnswered;
+    }
+
+    public void setSipAnswered(boolean sipAnswered) {
+        this.sipAnswered = sipAnswered;
+    }
+
     public long getStartTime() {
         return startTime;
     }
@@ -116,10 +154,10 @@ public class CallSession {
     
     /**
      * Check if call can start RTP
+     * RTP can only start when both sides are answered
      */
     public boolean canStartRTP() {
-        return (state == CallState.SIP_ANSWERED && isIncomingGSM()) ||
-               (state == CallState.GSM_ANSWERED && isOutgoingGSM());
+        return gsmAnswered && sipAnswered;
     }
     
     @Override

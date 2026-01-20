@@ -1,4 +1,4 @@
-package com.gsmgateway;
+package com.shreeyash.gateway;
 
 import android.content.BroadcastReceiver;
 import android.content.Context;
