@@ -384,6 +384,12 @@ public class GatewayService extends Service implements SIPClient.SIPEventListene
      * Handle incoming GSM call
      */
     private void handleIncomingGSMCall(int simSlot, String callerNumber) {
+        // Handle null/empty caller number - use "Unknown" as fallback
+        if (callerNumber == null || callerNumber.isEmpty()) {
+            Log.w(TAG, "Caller number is null/empty - might be restricted or permission issue");
+            callerNumber = "Unknown";
+        }
+
         Log.i(TAG, "Incoming GSM call on SIM" + simSlot + " from: " + callerNumber);
 
         // IMMEDIATELY silence the ringer to prevent phone from ringing/vibrating
@@ -420,8 +426,11 @@ public class GatewayService extends Service implements SIPClient.SIPEventListene
         updateNotification("Incoming SIM" + simSlot + ": " + callerNumber);
 
         // Send SIP INVITE to PBX
+        // The extension to dial is the SIP username (e.g., "gsm1" - routes via PBX dialplan)
+        // The caller ID is the actual GSM caller's phone number
         int rtpPort = Config.getRTPPort(simSlot);
-        SIPClient.SIPCall sipCall = client.makeCall(callerNumber, rtpPort);
+        String extensionToDial = config.getSIPUsername(simSlot); // e.g., "gsm1"
+        SIPClient.SIPCall sipCall = client.makeCall(extensionToDial, rtpPort, callerNumber);
 
         if (sipCall == null) {
             Log.e(TAG, "Failed to create SIP call");
@@ -433,7 +442,7 @@ public class GatewayService extends Service implements SIPClient.SIPEventListene
         session.setState(CallSession.CallState.SIP_DIALING);
         callIdToSimSlot.put(sipCall.callId, simSlot);
 
-        Log.i(TAG, "Sent INVITE to PBX for incoming GSM call");
+        Log.i(TAG, "Sent INVITE to PBX for incoming GSM call with caller ID: " + callerNumber);
     }
 
     /**
@@ -526,15 +535,27 @@ public class GatewayService extends Service implements SIPClient.SIPEventListene
             return;
         }
 
+        // Validate RTP endpoint info
+        String remoteAddr = session.getRemoteRtpAddress();
+        int remotePort = session.getRemoteRtpPort();
+
+        if (remoteAddr == null || remoteAddr.isEmpty() || remotePort == 0) {
+            Log.e(TAG, "Invalid remote RTP endpoint: " + remoteAddr + ":" + remotePort);
+            Log.e(TAG, "Session state: " + session);
+            return;
+        }
+
         Log.i(TAG, "Starting native PCM audio bridge for SIM" + simSlot);
-        Log.i(TAG, "Remote RTP: " + session.getRemoteRtpAddress() + ":" + session.getRemoteRtpPort());
+        Log.i(TAG, "Call direction: " + session.getDirection());
+        Log.i(TAG, "Remote RTP endpoint: " + remoteAddr + ":" + remotePort);
+        Log.i(TAG, "Local RTP port: " + Config.getRTPPort(simSlot));
         updateNotification("Bridging SIM" + simSlot + " call");
 
         // Mark RTP as active BEFORE starting to prevent race conditions
         session.setRtpActive(true);
 
         // Configure and start native PCM audio bridge (handles its own routing)
-        audioBridge.setRemoteAddress(session.getRemoteRtpAddress(), session.getRemoteRtpPort());
+        audioBridge.setRemoteAddress(remoteAddr, remotePort);
 
         if (!audioBridge.start()) {
             Log.e(TAG, "Failed to start audio bridge for SIM" + simSlot);

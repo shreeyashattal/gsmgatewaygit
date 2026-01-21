@@ -1,15 +1,15 @@
 import { CallState, BridgeStatus, GsmStatus, LogEntry, GatewayConfig, ActiveCall, BackendMetrics, ChannelConfig } from '../types';
 import { NativeBridge } from './NativeBridge';
-import { AsteriskBridge } from './SipStack';
+import { SIPBridge } from './SipStack';
 import { PersistenceService } from './PersistenceService';
-import { AsteriskAPI } from './AsteriskAPI';
+import { SIPCallHandler } from './SIPCallHandler';
 
 type EventCallback = (data: any) => void;
 
 class GatewayDaemon {
   private static instance: GatewayDaemon;
   private subscribers: Map<string, EventCallback[]> = new Map();
-  private asteriskBridges: [AsteriskBridge, AsteriskBridge];
+  private sipBridges: [SIPBridge, SIPBridge];
   private bootTime: number = Date.now();
 
   public state: {
@@ -39,6 +39,10 @@ class GatewayDaemon {
   private getDefaultConfig(): GatewayConfig {
     return {
       channels: [this.createDefaultChannel(1), this.createDefaultChannel(2)],
+      pbxHost: '',
+      pbxPort: 5060,
+      localSipPort: 5080,
+      trunkMode: true,  // Default to trunk mode (PBX registers with us)
       autoAnswer: true,
       rootLevel: true,
       jitterBufferMs: 60,
@@ -50,45 +54,45 @@ class GatewayDaemon {
   private createDefaultChannel(id: number): ChannelConfig {
     return {
       enabled: id === 1, // Only first channel enabled by default
-      asteriskContext: `from-gsm${id}`,
-      defaultExtension: 's',
+      sipUsername: `sim${id}`,
+      sipPassword: '',
       codec: 'PCMU',
-      rtpPort: id === 1 ? 5004 : 5006
+      rtpPort: id === 1 ? 10000 : 10002
     };
   }
 
   private constructor() {
-    this.asteriskBridges = [this.createAsteriskBridge(0), this.createAsteriskBridge(1)];
+    this.sipBridges = [this.createSipBridge(0), this.createSipBridge(1)];
     this.initializeService();
   }
 
-  private createAsteriskBridge(slot: 0 | 1): AsteriskBridge {
-    return new AsteriskBridge({
+  private createSipBridge(slot: 0 | 1): SIPBridge {
+    return new SIPBridge({
       onStatusChange: (status) => {
         this.state.bridgeStatus = status;
         this.state.metrics.bridgeStatus = status;
         this.notify('state_changed', this.state);
       },
-      onLog: (m) => this.log('DEBUG', `AMI_CH${slot+1}`, m),
+      onLog: (m) => this.log('DEBUG', `SIP_CH${slot+1}`, m),
       onRemoteBye: (callId) => {
         if (this.state.activeCalls[slot]?.id === callId) {
-          this.terminateCall(slot, 'ASTERISK_HANGUP');
+          this.terminateCall(slot, 'SIP_HANGUP');
         }
       },
       onIncomingInvite: async (callId, from) => {
-        this.log('INFO', 'AMI', `Incoming call from ${from} [Channel: ${callId}] - Processing...`);
+        this.log('INFO', 'SIP', `Incoming call from ${from} [Call-ID: ${callId}] - Processing...`);
         if (this.state.callStates[slot] !== CallState.IDLE) {
-          this.log('WARN', 'AMI', `Rejecting call - slot ${slot} busy`);
+          this.log('WARN', 'SIP', `Rejecting call - slot ${slot} busy`);
           return;
         }
 
         try {
-          this.log('INFO', 'AMI', `Processing incoming call ${callId}...`);
-          await this.asteriskBridges[slot].answerCall(callId);
-          this.log('INFO', 'AMI', `Call ${callId} answered successfully`);
-          this.handleAsteriskToGsmCall(slot, from, callId);
+          this.log('INFO', 'SIP', `Processing incoming call ${callId}...`);
+          await this.sipBridges[slot].answerCall(callId);
+          this.log('INFO', 'SIP', `Call ${callId} answered successfully`);
+          this.handleSipToGsmCall(slot, from, callId);
         } catch (e) {
-          this.log('ERROR', 'AMI', `Failed to process incoming call ${callId}: ${e}`);
+          this.log('ERROR', 'SIP', `Failed to process incoming call ${callId}: ${e}`);
         }
       }
     });
@@ -128,8 +132,8 @@ class GatewayDaemon {
 
     this.startSystemMetrics();
 
-    // Auto-connect to Asterisk AMI
-    this.connectToAsterisk();
+    // Initialize SIP stack
+    this.initializeSip();
 
     NativeBridge.setGsmDisconnectListener((slot) => {
       if (this.state.callStates[slot] !== CallState.IDLE) {
@@ -143,35 +147,37 @@ class GatewayDaemon {
       await this.handleIncomingGsm(slot, phoneNumber);
     });
 
-    // Setup Asterisk API handlers
-    const asteriskAPI = AsteriskAPI.getInstance();
-    asteriskAPI.setGsmCallRequestHandler(async (slot, phoneNumber, channelId) => {
-      return await this.makeGsmCallFromAsterisk(slot as 0 | 1, phoneNumber, channelId);
+    // Setup SIP call handlers
+    const sipHandler = SIPCallHandler.getInstance();
+    sipHandler.setGsmCallRequestHandler(async (slot, phoneNumber, callId) => {
+      return await this.makeGsmCallFromSip(slot as 0 | 1, phoneNumber, callId);
     });
 
-    asteriskAPI.setCallEventHandler((event, channelId, data) => {
-      this.handleAsteriskCallEvent(event, channelId, data);
+    sipHandler.setCallEventHandler((event, callId, data) => {
+      this.handleSipCallEvent(event, callId, data);
     });
 
     this.notify('state_changed', this.state);
   }
 
-  private async connectToAsterisk() {
-    this.log('INFO', 'AMI', 'Connecting to Asterisk AMI at 127.0.0.1:5038...');
+  private async initializeSip() {
+    const { trunkMode, localSipPort, pbxHost, pbxPort } = this.state.config;
+    this.log('INFO', 'SIP', `Initializing SIP stack on port ${localSipPort}...`);
     this.state.bridgeStatus = BridgeStatus.CONNECTING;
     this.state.metrics.bridgeStatus = BridgeStatus.CONNECTING;
     this.notify('state_changed', this.state);
 
     try {
-      // Both bridges share the same AMI connection in practice
-      await this.asteriskBridges[0].connect();
+      await this.sipBridges[0].connect();
       this.state.bridgeStatus = BridgeStatus.CONNECTED;
       this.state.metrics.bridgeStatus = BridgeStatus.CONNECTED;
-      this.log('INFO', 'AMI', 'Connected to Asterisk AMI successfully');
+      this.log('INFO', 'SIP', trunkMode ?
+        `SIP stack listening on port ${localSipPort} (trunk mode)` :
+        `SIP registered with PBX at ${pbxHost}:${pbxPort}`);
     } catch (e: any) {
       this.state.bridgeStatus = BridgeStatus.ERROR;
       this.state.metrics.bridgeStatus = BridgeStatus.ERROR;
-      this.log('ERROR', 'AMI', `Failed to connect to Asterisk: ${e.message}`);
+      this.log('ERROR', 'SIP', `Failed to initialize SIP: ${e.message}`);
     }
     this.notify('state_changed', this.state);
   }
@@ -241,36 +247,36 @@ class GatewayDaemon {
     }, 10000);
   }
 
-  // Method for Asterisk to request outgoing GSM call
-  public async makeGsmCallFromAsterisk(slot: 0 | 1, phoneNumber: string, asteriskChannelId: string): Promise<boolean> {
+  // Method for SIP to request outgoing GSM call
+  public async makeGsmCallFromSip(slot: 0 | 1, phoneNumber: string, sipCallId: string): Promise<boolean> {
     const channel = this.state.config.channels[slot];
     if (!channel.enabled || this.state.callStates[slot] !== CallState.IDLE) {
-      this.log('WARN', 'AMI', `Cannot make GSM call - Channel disabled or slot ${slot} busy`);
+      this.log('WARN', 'SIP', `Cannot make GSM call - Channel disabled or slot ${slot} busy`);
       return false;
     }
 
     const otherSlot = slot === 0 ? 1 : 0;
     if (this.state.callStates[otherSlot] === CallState.BRIDGING) {
-      this.log('WARN', 'AMI', `DSDS Radio Busy: Bridge on SIM${otherSlot+1} active. GSM call ignored.`);
+      this.log('WARN', 'SIP', `DSDS Radio Busy: Bridge on SIM${otherSlot+1} active. GSM call ignored.`);
       return false;
     }
 
     this.state.callStates[slot] = CallState.OUTGOING_GSM;
-    this.log('INFO', 'AMI', `Outgoing GSM Call requested by Asterisk to ${phoneNumber}`);
+    this.log('INFO', 'SIP', `Outgoing GSM Call requested via SIP to ${phoneNumber}`);
 
     try {
-      const success = await NativeBridge.makeGsmCallForAsterisk(slot, phoneNumber);
+      const success = await NativeBridge.makeGsmCallForSip(slot, phoneNumber);
 
       if (success) {
         this.state.activeCalls[slot] = {
-          id: asteriskChannelId,
+          id: sipCallId,
           simSlot: slot,
           gsmNumber: phoneNumber,
-          asteriskChannel: asteriskChannelId,
+          sipCallId: sipCallId,
           startTime: Date.now(),
-          direction: 'ASTERISK_TO_GSM',
+          direction: 'SIP_TO_GSM',
           durationSeconds: 0,
-          signaling: ['ASTERISK_REQUEST', 'GSM_MODEM_DIAL'],
+          signaling: ['SIP_INVITE', 'GSM_MODEM_DIAL'],
           audioMetrics: { latency: 45, jitter: 5, rxPackets: 0, txPackets: 0, bufferDepth: 60 }
         };
 
@@ -284,7 +290,7 @@ class GatewayDaemon {
         return false;
       }
     } catch (e: any) {
-      this.log('ERROR', 'AMI', `Failed to make GSM call: ${e.message}`);
+      this.log('ERROR', 'SIP', `Failed to make GSM call: ${e.message}`);
       this.state.callStates[slot] = CallState.IDLE;
       this.notify('state_changed', this.state);
       return false;
@@ -310,26 +316,25 @@ class GatewayDaemon {
     await NativeBridge.answerGsmCallPrivileged(slot);
 
     try {
-      // For incoming GSM calls, we tell Asterisk to originate a call
-      const destination = channel.defaultExtension;
-      const context = channel.asteriskContext;
+      // For incoming GSM calls, we send a SIP INVITE to the PBX
+      const sipUsername = channel.sipUsername || `sim${slot + 1}`;
 
-      const cid = await this.asteriskBridges[slot].createInvite(slot, destination);
+      const callId = await this.sipBridges[slot].createInvite(slot, sipUsername);
       this.state.activeCalls[slot] = {
-        id: cid,
+        id: callId,
         simSlot: slot,
         gsmNumber: phoneNumber,
-        asteriskChannel: cid,
+        sipCallId: callId,
         startTime: Date.now(),
-        direction: 'GSM_TO_ASTERISK',
+        direction: 'GSM_TO_SIP',
         durationSeconds: 0,
-        signaling: ['GSM_INCOMING', 'GSM_ANSWERED', 'ASTERISK_ORIGINATE'],
+        signaling: ['GSM_INCOMING', 'GSM_ANSWERED', 'SIP_INVITE'],
         audioMetrics: { latency: 32, jitter: 1, rxPackets: 0, txPackets: 0, bufferDepth: 60 }
       };
 
       this.state.callStates[slot] = CallState.BRIDGING;
       await NativeBridge.setAudioRouting(slot, 'IN_CALL');
-      await this.asteriskBridges[slot].startAudioBridge(slot);
+      await this.sipBridges[slot].startAudioBridge(slot);
       this.notify('state_changed', this.state);
     } catch (e: any) {
       this.log('ERROR', 'CORE', `Failed to bridge call: ${e.message}`);
@@ -339,33 +344,33 @@ class GatewayDaemon {
     }
   }
 
-  public async handleAsteriskToGsmCall(slot: 0 | 1, targetGsmNumber: string, asteriskChannelId: string) {
+  public async handleSipToGsmCall(slot: 0 | 1, targetGsmNumber: string, sipCallId: string) {
     const channel = this.state.config.channels[slot];
     if (!channel.enabled || this.state.callStates[slot] !== CallState.IDLE) {
-      this.log('WARN', 'AMI', `Incoming Asterisk call ignored (Channel disabled or Busy)`);
+      this.log('WARN', 'SIP', `Incoming SIP call ignored (Channel disabled or Busy)`);
       return;
     }
 
     const otherSlot = slot === 0 ? 1 : 0;
     if (this.state.callStates[otherSlot] === CallState.BRIDGING) {
-      this.log('WARN', 'AMI', `Inter-Slot Radio Conflict: Dropping call for SIM${slot+1}.`);
+      this.log('WARN', 'SIP', `Inter-Slot Radio Conflict: Dropping call for SIM${slot+1}.`);
       return;
     }
 
-    this.state.callStates[slot] = CallState.INCOMING_ASTERISK;
-    this.log('INFO', 'AMI', `Incoming Asterisk Call -> External GSM: ${targetGsmNumber}`);
+    this.state.callStates[slot] = CallState.INCOMING_SIP;
+    this.log('INFO', 'SIP', `Incoming SIP Call -> External GSM: ${targetGsmNumber}`);
 
     await NativeBridge.dialGsmSilently(slot, targetGsmNumber);
 
     this.state.activeCalls[slot] = {
-      id: asteriskChannelId,
+      id: sipCallId,
       simSlot: slot,
       gsmNumber: targetGsmNumber,
-      asteriskChannel: asteriskChannelId,
+      sipCallId: sipCallId,
       startTime: Date.now(),
-      direction: 'ASTERISK_TO_GSM',
+      direction: 'SIP_TO_GSM',
       durationSeconds: 0,
-      signaling: ['ASTERISK_INCOMING', 'GSM_MODEM_DIAL', 'WAIT_FOR_GSM_ANSWER'],
+      signaling: ['SIP_INVITE', 'GSM_MODEM_DIAL', 'WAIT_FOR_GSM_ANSWER'],
       audioMetrics: { latency: 45, jitter: 5, rxPackets: 0, txPackets: 0, bufferDepth: 60 }
     };
 
@@ -378,12 +383,12 @@ class GatewayDaemon {
     if (this.state.callStates[slot] === CallState.IDLE) return;
     this.log('INFO', 'CORE', `Terminating Call on Channel ${slot+1}: ${reason}`);
 
-    await this.asteriskBridges[slot].stopAudioBridge(slot);
+    await this.sipBridges[slot].stopAudioBridge(slot);
     await NativeBridge.setAudioRouting(slot, 'COMMUNICATION');
 
     const activeCall = this.state.activeCalls[slot];
     if (activeCall) {
-      await this.asteriskBridges[slot].hangupCall(activeCall.id);
+      await this.sipBridges[slot].hangupCall(activeCall.id);
     }
 
     await NativeBridge.hangupGsmPrivileged(slot);
@@ -392,41 +397,41 @@ class GatewayDaemon {
     this.notify('state_changed', this.state);
   }
 
-  private handleAsteriskCallEvent(event: string, channelId: string, data?: any) {
-    this.log('INFO', 'AMI', `Call event: ${event} for channel ${channelId}`);
+  private handleSipCallEvent(event: string, callId: string, data?: any) {
+    this.log('INFO', 'SIP', `Call event: ${event} for call ${callId}`);
 
     switch (event) {
       case 'answered':
-        this.handleAsteriskCallAnswered(channelId);
+        this.handleSipCallAnswered(callId);
         break;
       case 'hangup':
-        this.handleAsteriskCallHangup(channelId);
+        this.handleSipCallHangup(callId);
         break;
       case 'bridge_established':
-        this.log('INFO', 'AMI', `Audio bridge established for ${channelId}`);
+        this.log('INFO', 'SIP', `Audio bridge established for ${callId}`);
         break;
       default:
-        this.log('DEBUG', 'AMI', `Unhandled event: ${event}`);
+        this.log('DEBUG', 'SIP', `Unhandled event: ${event}`);
     }
   }
 
-  private handleAsteriskCallAnswered(channelId: string) {
+  private handleSipCallAnswered(callId: string) {
     for (let slot = 0; slot < 2; slot++) {
       const activeCall = this.state.activeCalls[slot];
-      if (activeCall && activeCall.id === channelId) {
-        this.log('INFO', 'AMI', `Call ${channelId} answered, starting audio bridge`);
-        this.asteriskBridges[slot].startAudioBridge(slot);
+      if (activeCall && activeCall.id === callId) {
+        this.log('INFO', 'SIP', `Call ${callId} answered, starting audio bridge`);
+        this.sipBridges[slot].startAudioBridge(slot);
         break;
       }
     }
   }
 
-  private handleAsteriskCallHangup(channelId: string) {
+  private handleSipCallHangup(callId: string) {
     for (let slot = 0; slot < 2; slot++) {
       const activeCall = this.state.activeCalls[slot];
-      if (activeCall && activeCall.id === channelId) {
-        this.log('INFO', 'AMI', `Call ${channelId} hung up by Asterisk`);
-        this.terminateCall(slot as 0 | 1, 'ASTERISK_HANGUP');
+      if (activeCall && activeCall.id === callId) {
+        this.log('INFO', 'SIP', `Call ${callId} hung up via SIP`);
+        this.terminateCall(slot as 0 | 1, 'SIP_HANGUP');
         break;
       }
     }

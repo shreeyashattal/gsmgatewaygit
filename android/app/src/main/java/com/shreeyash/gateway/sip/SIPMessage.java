@@ -122,8 +122,11 @@ public class SIPMessage {
 
     /**
      * Build a SIP INVITE request
+     * @param callerId The actual caller ID (phone number) to display
+     * @param sipUser The SIP account username for Contact header
+     * @param toUser The destination to dial (extension)
      */
-    public static SIPMessage createInvite(String fromUser, String toUser, String domain,
+    public static SIPMessage createInvite(String callerId, String sipUser, String toUser, String domain,
                                           String localIp, int localPort, int rtpPort,
                                           String callId, int cseq) {
         SIPMessage msg = new SIPMessage();
@@ -132,9 +135,11 @@ public class SIPMessage {
         msg.requestUri = "sip:" + toUser + "@" + domain;
 
         String fromTag = generateTag();
-        String from = String.format("<sip:%s@%s>;tag=%s", fromUser, domain, fromTag);
+        // Use caller ID in From header for proper caller identification
+        String from = String.format("\"%s\" <sip:%s@%s>;tag=%s", callerId, callerId, domain, fromTag);
         String to = String.format("<sip:%s@%s>", toUser, domain);
-        String contact = String.format("<sip:%s@%s:%d>", fromUser, localIp, localPort);
+        // Use SIP user for Contact (for return signaling)
+        String contact = String.format("<sip:%s@%s:%d>", sipUser, localIp, localPort);
         String via = String.format("SIP/2.0/UDP %s:%d;branch=%s;rport",
                                    localIp, localPort, generateBranch());
 

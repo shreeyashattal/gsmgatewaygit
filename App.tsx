@@ -79,15 +79,15 @@ const App: React.FC = () => {
             <div className="flex items-center gap-2 mt-0.5">
               <span className="text-[7px] font-black text-blue-500 tracking-widest uppercase">V{APP_VERSION}</span>
               <div className="w-0.5 h-0.5 bg-white/20 rounded-full" />
-              <span className="text-[7px] text-gray-600 font-mono uppercase tracking-widest">AMI BRIDGE</span>
+              <span className="text-[7px] text-gray-600 font-mono uppercase tracking-widest">DIRECT SIP</span>
             </div>
           </div>
         </div>
 
-        {/* AMI Status Indicator */}
+        {/* SIP Status Indicator */}
         <div className="flex items-center gap-2">
           <div className={`w-2 h-2 rounded-full ${bridgeStatus === BridgeStatus.CONNECTED ? 'bg-green-500 shadow-[0_0_10px_rgba(34,197,94,0.8)]' : bridgeStatus === BridgeStatus.CONNECTING ? 'bg-yellow-500 animate-pulse' : 'bg-red-500'}`} />
-          <span className="text-[8px] font-black text-gray-500 uppercase">AMI</span>
+          <span className="text-[8px] font-black text-gray-500 uppercase">SIP</span>
         </div>
       </header>
 

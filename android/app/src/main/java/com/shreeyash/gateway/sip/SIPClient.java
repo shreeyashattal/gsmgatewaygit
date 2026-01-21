@@ -226,8 +226,11 @@ public class SIPClient {
 
     /**
      * Make an outgoing call (for incoming GSM calls)
+     * @param toExtension The PBX extension to dial
+     * @param localRtpPort The local RTP port for audio
+     * @param callerNumber The GSM caller's phone number (for caller ID)
      */
-    public SIPCall makeCall(String toNumber, int localRtpPort) {
+    public SIPCall makeCall(String toExtension, int localRtpPort, String callerNumber) {
         // Determine target host (configured PBX or learned from REGISTER)
         String targetHost = pbxHost;
         int targetPort = pbxPort;
@@ -245,6 +248,8 @@ public class SIPClient {
 
         final String destHost = targetHost;
         final int destPort = targetPort;
+        // Use caller number for caller ID, fallback to username if not provided
+        final String displayCallerId = (callerNumber != null && !callerNumber.isEmpty()) ? callerNumber : username;
 
         SIPCall call = new SIPCall();
         call.callId = SIPMessage.generateCallId(destHost);
@@ -259,12 +264,12 @@ public class SIPClient {
         executor.execute(() -> {
             try {
                 SIPMessage invite = SIPMessage.createInvite(
-                    username, toNumber, destHost, localIp, localSipPort,
+                    displayCallerId, username, toExtension, destHost, localIp, localSipPort,
                     localRtpPort, call.callId, call.cseq++);
 
                 call.fromHeader = invite.getHeader("from");
                 call.toHeader = invite.getHeader("to");
-                call.remoteUri = "sip:" + toNumber + "@" + destHost;
+                call.remoteUri = "sip:" + toExtension + "@" + destHost;
 
                 // Send to target
                 String data = invite.toBytes();
@@ -273,7 +278,7 @@ public class SIPClient {
                 DatagramPacket packet = new DatagramPacket(bytes, bytes.length, destAddr, destPort);
                 sipSocket.send(packet);
 
-                Log.i(TAG, "Sent INVITE to " + toNumber + " via " + destHost + ":" + destPort);
+                Log.i(TAG, "Sent INVITE to " + toExtension + " with caller ID: " + displayCallerId + " via " + destHost + ":" + destPort);
 
             } catch (Exception e) {
                 Log.e(TAG, "Failed to send INVITE: " + e.getMessage(), e);
@@ -282,6 +287,13 @@ public class SIPClient {
         });
 
         return call;
+    }
+
+    /**
+     * Make an outgoing call (legacy method without caller ID)
+     */
+    public SIPCall makeCall(String toExtension, int localRtpPort) {
+        return makeCall(toExtension, localRtpPort, null);
     }
 
     /**

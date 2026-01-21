@@ -1,54 +1,49 @@
 import { BridgeStatus } from '../types';
 import { Capacitor } from '@capacitor/core';
 
-// Asterisk Manager Interface (AMI) communication
-interface AsteriskAMI {
+// SIP User Agent interface - handles SIP signaling
+interface SIPUserAgent {
   connect(): Promise<boolean>;
   disconnect(): Promise<void>;
   originateCall(slot: number, destination: string): Promise<string>;
-  hangupChannel(channel: string): Promise<boolean>;
-  getChannelStatus(channel: string): Promise<string>;
+  hangupCall(callId: string): Promise<boolean>;
+  getCallStatus(callId: string): Promise<string>;
   onCallEvent?: (event: any) => void;
 }
 
-// Mock AMI implementation for browser mode
-class MockAsteriskAMI implements AsteriskAMI {
+// Mock SIP implementation for browser mode
+class MockSIPUserAgent implements SIPUserAgent {
   async connect(): Promise<boolean> {
-    console.log('[AMI] Mock: Connected to Asterisk');
+    console.log('[SIP] Mock: SIP stack initialized');
     return true;
   }
 
   async disconnect(): Promise<void> {
-    console.log('[AMI] Mock: Disconnected from Asterisk');
+    console.log('[SIP] Mock: SIP stack stopped');
   }
 
   async originateCall(slot: number, destination: string): Promise<string> {
-    console.log(`[AMI] Mock: Originating call to ${destination} from slot ${slot}`);
-    return `Local/gsm${slot+1}@from-gsm${slot+1}-${Date.now()}`;
+    console.log(`[SIP] Mock: Sending INVITE to ${destination} via slot ${slot}`);
+    return `sip-call-${slot+1}-${Date.now()}`;
   }
 
-  async hangupChannel(channel: string): Promise<boolean> {
-    console.log(`[AMI] Mock: Hanging up channel ${channel}`);
+  async hangupCall(callId: string): Promise<boolean> {
+    console.log(`[SIP] Mock: Sending BYE for call ${callId}`);
     return true;
   }
 
-  async getChannelStatus(channel: string): Promise<string> {
-    return 'Up';
+  async getCallStatus(callId: string): Promise<string> {
+    return 'ACTIVE';
   }
 }
 
-// Real AMI implementation - connects to Asterisk via TCP socket
-class AsteriskAMIClient implements AsteriskAMI {
+// Real SIP implementation - uses native SIPClient
+class NativeSIPUserAgent implements SIPUserAgent {
   private connected: boolean = false;
-  // AMI credentials are hardcoded to match Config.java
-  private readonly amiHost: string = '127.0.0.1';
-  private readonly amiPort: number = 5038;
-  private readonly amiUser: string = 'gateway';
-  private readonly amiPass: string = 'gW8y#mK2$pL9';
 
   async connect(): Promise<boolean> {
-    console.log('[AMI] Connecting to Asterisk AMI at 127.0.0.1:5038...');
-    // The actual AMI connection is handled by the native Java AMIClient
+    console.log('[SIP] Initializing native SIP stack...');
+    // The actual SIP stack is handled by the native Java SIPClient
     // This TypeScript layer communicates with the native layer via Capacitor
     this.connected = true;
     return true;
@@ -60,35 +55,35 @@ class AsteriskAMIClient implements AsteriskAMI {
 
   async originateCall(slot: number, destination: string): Promise<string> {
     if (!this.connected) {
-      throw new Error('Not connected to Asterisk AMI');
+      throw new Error('SIP stack not initialized');
     }
 
-    const channelId = `Local/gsm${slot+1}@from-gsm${slot+1}-${Date.now()}`;
-    console.log(`[AMI] Originating call: ${channelId} -> ${destination}`);
-    return channelId;
+    const callId = `sip-call-${slot+1}-${Date.now()}`;
+    console.log(`[SIP] Sending INVITE: ${callId} -> ${destination}`);
+    return callId;
   }
 
-  async hangupChannel(channel: string): Promise<boolean> {
+  async hangupCall(callId: string): Promise<boolean> {
     if (!this.connected) {
-      throw new Error('Not connected to Asterisk AMI');
+      throw new Error('SIP stack not initialized');
     }
-    console.log(`[AMI] Hanging up channel: ${channel}`);
+    console.log(`[SIP] Sending BYE for call: ${callId}`);
     return true;
   }
 
-  async getChannelStatus(channel: string): Promise<string> {
-    return 'Up';
+  async getCallStatus(callId: string): Promise<string> {
+    return 'ACTIVE';
   }
 }
 
-export class AsteriskBridge {
+export class SIPBridge {
   private status: BridgeStatus = BridgeStatus.DISCONNECTED;
-  private amiClient: AsteriskAMI;
+  private sipClient: SIPUserAgent;
   private onStatusChange?: (status: BridgeStatus) => void;
   private onLog?: (log: string) => void;
   private onRemoteBye?: (callId: string) => void;
   private onIncomingInvite?: (callId: string, from: string) => void;
-  private activeChannels: Map<number, string> = new Map();
+  private activeCalls: Map<number, string> = new Map();
 
   constructor(callbacks: {
     onStatusChange: (status: BridgeStatus) => void;
@@ -96,12 +91,12 @@ export class AsteriskBridge {
     onRemoteBye?: (callId: string) => void;
     onIncomingInvite?: (callId: string, from: string) => void;
   }) {
-    console.log('AsteriskBridge: Constructor called');
+    console.log('SIPBridge: Constructor called');
 
-    // Use mock client for browser mode, real client for native
-    this.amiClient = Capacitor.isNativePlatform()
-      ? new AsteriskAMIClient()
-      : new MockAsteriskAMI();
+    // Use mock client for browser mode, real native SIP for native
+    this.sipClient = Capacitor.isNativePlatform()
+      ? new NativeSIPUserAgent()
+      : new MockSIPUserAgent();
 
     this.onStatusChange = callbacks.onStatusChange;
     this.onLog = callbacks.onLog;
@@ -113,37 +108,37 @@ export class AsteriskBridge {
     this.setStatus(BridgeStatus.CONNECTING);
 
     try {
-      this.log('AMI: Connecting to Asterisk...');
-      const connected = await this.amiClient.connect();
+      this.log('SIP: Initializing stack...');
+      const connected = await this.sipClient.connect();
 
       if (!connected) {
-        throw new Error('Failed to connect to Asterisk AMI');
+        throw new Error('Failed to initialize SIP stack');
       }
 
       this.setStatus(BridgeStatus.CONNECTED);
-      this.log('AMI: Connected successfully');
+      this.log('SIP: Stack initialized successfully');
     } catch (e: any) {
-      this.log(`ERR: Failed to connect to Asterisk: ${e.message}`);
+      this.log(`ERR: Failed to initialize SIP: ${e.message}`);
       this.setStatus(BridgeStatus.ERROR);
       throw e;
     }
   }
 
   public async disconnect(): Promise<void> {
-    this.log("AMI: Disconnecting...");
+    this.log("SIP: Shutting down...");
 
-    // Hang up any active channels
-    for (const [slot, channelId] of this.activeChannels) {
+    // Hang up any active calls
+    for (const [slot, callId] of this.activeCalls) {
       try {
-        await this.amiClient.hangupChannel(channelId);
+        await this.sipClient.hangupCall(callId);
       } catch (e) {
-        this.log(`WARN: Failed to hangup channel ${channelId}: ${e}`);
+        this.log(`WARN: Failed to hangup call ${callId}: ${e}`);
       }
     }
-    this.activeChannels.clear();
+    this.activeCalls.clear();
 
     try {
-      await this.amiClient.disconnect();
+      await this.sipClient.disconnect();
       this.setStatus(BridgeStatus.DISCONNECTED);
     } catch (e: any) {
       this.log(`ERR: Failed to disconnect: ${e.message}`);
@@ -152,72 +147,71 @@ export class AsteriskBridge {
 
   public async createInvite(slot: number, target: string): Promise<string> {
     if (this.status !== BridgeStatus.CONNECTED) {
-      this.log('ERR: Cannot create call - AMI not connected');
-      throw new Error('AMI_NOT_CONNECTED');
+      this.log('ERR: Cannot create call - SIP not connected');
+      throw new Error('SIP_NOT_CONNECTED');
     }
 
-    this.log(`TX: Originating call to ${target} via slot ${slot}`);
+    this.log(`TX: INVITE to ${target} via slot ${slot}`);
 
     try {
-      const channelId = await this.amiClient.originateCall(slot, target);
-      this.activeChannels.set(slot, channelId);
-      return channelId;
+      const callId = await this.sipClient.originateCall(slot, target);
+      this.activeCalls.set(slot, callId);
+      return callId;
     } catch (e: any) {
-      this.log(`ERR: Call origination failed: ${e.message}`);
+      this.log(`ERR: INVITE failed: ${e.message}`);
       throw e;
     }
   }
 
-  public async hangupCall(channelId: string): Promise<void> {
+  public async hangupCall(callId: string): Promise<void> {
     try {
-      await this.amiClient.hangupChannel(channelId);
-      // Remove from active channels
-      for (const [slot, chId] of this.activeChannels) {
-        if (chId === channelId) {
-          this.activeChannels.delete(slot);
+      await this.sipClient.hangupCall(callId);
+      // Remove from active calls
+      for (const [slot, cid] of this.activeCalls) {
+        if (cid === callId) {
+          this.activeCalls.delete(slot);
           break;
         }
       }
-      this.log(`TX: Hangup [Channel: ${channelId}]`);
+      this.log(`TX: BYE [Call-ID: ${callId}]`);
     } catch (e: any) {
-      this.log(`ERR: Failed to hangup channel ${channelId}: ${e.message}`);
+      this.log(`ERR: Failed to send BYE for ${callId}: ${e.message}`);
     }
   }
 
-  public async answerCall(channelId: string): Promise<void> {
-    // In Asterisk, calls are typically auto-answered via dialplan
-    this.log(`AMI: Call answered on channel ${channelId}`);
+  public async answerCall(callId: string): Promise<void> {
+    this.log(`TX: 200 OK [Call-ID: ${callId}]`);
   }
 
   // Audio bridging is handled by the native RTPManager
   public async startAudioBridge(slot: number): Promise<void> {
-    this.log(`AUDIO: Starting RTP bridge for slot ${slot}`);
+    this.log(`RTP: Starting bridge for slot ${slot}`);
   }
 
   public async stopAudioBridge(slot: number): Promise<void> {
-    this.log(`AUDIO: Stopping RTP bridge for slot ${slot}`);
+    this.log(`RTP: Stopping bridge for slot ${slot}`);
   }
 
-  // Handle incoming call from Asterisk (triggered by AMI events)
-  public handleIncomingCallFromAsterisk(slot: number, channelId: string, callerId: string): void {
-    this.activeChannels.set(slot, channelId);
-    this.log(`RX: Incoming call from Asterisk: ${callerId} on slot ${slot}`);
+  // Handle incoming SIP INVITE
+  public handleIncomingInvite(slot: number, callId: string, from: string): void {
+    this.activeCalls.set(slot, callId);
+    this.log(`RX: INVITE from ${from} on slot ${slot}`);
     if (this.onIncomingInvite) {
-      this.onIncomingInvite(channelId, callerId);
+      this.onIncomingInvite(callId, from);
     }
   }
 
-  // Handle call hangup from Asterisk
-  public handleCallHangupFromAsterisk(channelId: string): void {
-    this.log(`RX: Call hangup from Asterisk: ${channelId}`);
-    for (const [slot, chId] of this.activeChannels) {
-      if (chId === channelId) {
-        this.activeChannels.delete(slot);
+  // Handle SIP BYE from remote
+  public handleRemoteBye(callId: string): void {
+    this.log(`RX: BYE [Call-ID: ${callId}]`);
+    for (const [slot, cid] of this.activeCalls) {
+      if (cid === callId) {
+        this.activeCalls.delete(slot);
         break;
       }
     }
     if (this.onRemoteBye) {
-      this.onRemoteBye(channelId);
+      this.onRemoteBye(callId);
     }
   }
 

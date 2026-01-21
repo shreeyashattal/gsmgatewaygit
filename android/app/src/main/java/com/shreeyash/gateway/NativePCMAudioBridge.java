@@ -201,64 +201,79 @@ public class NativePCMAudioBridge {
      * Set up mixer controls for voice call audio capture/injection on SM6150
      *
      * Audio Flow for Gateway:
-     * - Capture: GSM callee voice (VOC_REC_DL) → RTP → PBX
-     * - Inject: PBX voice → RTP → Incall_Music → GSM callee
-     * - Mute: Phone earpiece (user shouldn't hear) and phone mic (user shouldn't speak)
+     * - Capture: GSM callee voice (VOC_REC_UL) → RTP → PBX
+     *   UL = What the remote GSM party says (their uplink to us = their voice)
+     * - Inject: PBX voice → RTP → Incall_Music → GSM callee (DL path)
+     *   DL = What we send to the remote party
+     * - Mute: Phone earpiece and mic (gateway mode - no local audio)
      *
-     * IMPORTANT: To prevent echo, we use separate MultiMedia devices:
-     * - MultiMedia1 for capture (VOC_REC_DL)
-     * - MultiMedia2 for playback (Incall_Music)
+     * KEY FIX: Capture VOC_REC_UL (not DL) to get remote party's voice without echo
+     * The downlink includes our injected audio, causing echo!
      */
     private void setupVoiceCallRouting() {
         Log.i(TAG, "Setting up voice call audio routing for SM6150 gateway mode");
 
-        // ===== CAPTURE PATH (Callee voice → RTP → PBX) =====
-        // Use MultiMedia1 for voice capture ONLY (downlink = what callee says)
-        execRoot("tinymix 'MultiMedia1 Mixer VOC_REC_DL' 1");  // Capture callee voice (downlink)
-        execRoot("tinymix 'MultiMedia1 Mixer VOC_REC_UL' 0");  // Don't capture uplink
+        // ===== CAPTURE PATH (Remote GSM party voice → RTP → PBX) =====
+        // Use VOC_REC_UL to capture what the remote GSM party says
+        // UL from modem perspective = remote party's voice coming TO us
+        // This avoids capturing the injected incall_music (which goes on DL)
+        execRoot("tinymix 'MultiMedia1 Mixer VOC_REC_UL' 1");  // Remote party voice
+        execRoot("tinymix 'MultiMedia1 Mixer VOC_REC_DL' 0");  // Don't capture downlink (has our injection)
 
-        // Set voice recording config to downlink only (prevents capturing injected audio)
-        execRoot("tinymix 'Voc Rec Config' 0");  // 0 = DL only, 1 = UL+DL
+        // Set voice recording config to UL only
+        execRoot("tinymix 'Voc Rec Config' 1");  // 1 = UL only
 
         // ===== INJECTION PATH (PBX → RTP → GSM callee) =====
-        // Use MultiMedia2 for injection to avoid feedback loop with MultiMedia1 capture
+        // Use MultiMedia2 for injection (separate from capture on MM1)
         execRoot("tinymix 'Incall_Music Audio Mixer MultiMedia2' 1");
-        // Also enable MultiMedia9 as backup path for incall music
         execRoot("tinymix 'Incall_Music Audio Mixer MultiMedia9' 1");
 
-        // Disable MultiMedia1 from incall music to prevent echo
+        // Ensure MultiMedia1 doesn't inject (it's for capture only)
         execRoot("tinymix 'Incall_Music Audio Mixer MultiMedia1' 0");
 
         // ===== MUTE PHONE SPEAKER/EARPIECE =====
-        // Mute the voice RX device so phone user doesn't hear
+        // The gateway user shouldn't hear the call
         execRoot("tinymix 'Voice Rx Device Mute' 1 1 1");
         execRoot("tinymix 'Voice Rx Gain' 0 0 0");
 
-        // Disable voice routing to earpiece (slimbus path)
+        // Disable all RX paths to prevent local audio
         execRoot("tinymix 'SLIM_0_RX_Voice Mixer VoiceMMode1' 0");
         execRoot("tinymix 'SLIM_0_RX_Voice Mixer VoiceMMode2' 0");
-
-        // Disable CDC_DMA voice routing
         execRoot("tinymix 'RX_CDC_DMA_RX_0_Voice Mixer VoiceMMode1' 0");
         execRoot("tinymix 'RX_CDC_DMA_RX_0_Voice Mixer VoiceMMode2' 0");
-
-        // Set RX digital volume to 0
         execRoot("tinymix 'RX0 Digital Volume' 0");
         execRoot("tinymix 'RX1 Digital Volume' 0");
-
-        // Disable earpiece DAC
         execRoot("tinymix 'EAR_SPKR DAC Switch' 0");
         execRoot("tinymix 'EAR PA Gain' 0");
-
-        // Disable headphone outputs
         execRoot("tinymix 'HPHL DAC Switch' 0");
         execRoot("tinymix 'HPHR DAC Switch' 0");
 
         // ===== MUTE PHONE MIC =====
-        // Mute mic so phone user's voice doesn't go to callee
+        // The gateway user's mic shouldn't capture audio - mute all TX paths
         execRoot("tinymix 'Voice Tx Device Mute' 1 1 1");
 
-        Log.i(TAG, "Voice call routing configured for gateway mode");
+        // Disable TX (mic) paths on SM6150/Bengal
+        execRoot("tinymix 'TX_CDC_DMA_TX_3_Voice Mixer VoiceMMode1' 0");
+        execRoot("tinymix 'TX_CDC_DMA_TX_3_Voice Mixer VoiceMMode2' 0");
+        execRoot("tinymix 'SLIM_0_TX_Voice Mixer VoiceMMode1' 0");
+        execRoot("tinymix 'SLIM_0_TX_Voice Mixer VoiceMMode2' 0");
+
+        // Disable ADC (mic input) paths
+        execRoot("tinymix 'ADC1 Volume' 0");
+        execRoot("tinymix 'ADC2 Volume' 0");
+        execRoot("tinymix 'ADC3 Volume' 0");
+        execRoot("tinymix 'DEC0 Volume' 0");
+        execRoot("tinymix 'DEC1 Volume' 0");
+
+        // Disable mic switches
+        execRoot("tinymix 'TX0 Input' 'ZERO'");
+        execRoot("tinymix 'TX1 Input' 'ZERO'");
+
+        // Give mixer time to apply settings
+        try { Thread.sleep(100); } catch (InterruptedException e) {}
+
+        Log.i(TAG, "Voice call routing configured - Capture: VOC_REC_UL, Inject: Incall_Music via MM2");
+        Log.i(TAG, "Phone mic and speaker MUTED for gateway mode");
     }
 
     /**
@@ -268,37 +283,29 @@ public class NativePCMAudioBridge {
         Log.i(TAG, "Disabling voice call audio routing, restoring normal audio");
 
         // Disable voice recording routing
-        execRoot("tinymix 'MultiMedia1 Mixer VOC_REC_DL' 0");
         execRoot("tinymix 'MultiMedia1 Mixer VOC_REC_UL' 0");
+        execRoot("tinymix 'MultiMedia1 Mixer VOC_REC_DL' 0");
 
         // Disable incall music routing
         execRoot("tinymix 'Incall_Music Audio Mixer MultiMedia1' 0");
+        execRoot("tinymix 'Incall_Music Audio Mixer MultiMedia2' 0");
+        execRoot("tinymix 'Incall_Music Audio Mixer MultiMedia9' 0");
 
         // Restore phone speaker/earpiece (unmute)
         execRoot("tinymix 'Voice Rx Device Mute' 0 0 0");
-        execRoot("tinymix 'Voice Rx Gain' 2000 2000 2000");  // Restore normal gain
+        execRoot("tinymix 'Voice Rx Gain' 2000 2000 2000");
 
         // Restore RX digital volumes
         execRoot("tinymix 'RX0 Digital Volume' 84");
         execRoot("tinymix 'RX1 Digital Volume' 84");
-        execRoot("tinymix 'RX2 Digital Volume' 84");
 
-        // Restore earpiece/speaker DAC
+        // Restore earpiece DAC
         execRoot("tinymix 'EAR_SPKR DAC Switch' 1");
         execRoot("tinymix 'HPHL DAC Switch' 1");
         execRoot("tinymix 'HPHR DAC Switch' 1");
 
-        // Restore voice routing
-        // System will usually restore these automatically on next normal call
-
         // Restore phone mic
         execRoot("tinymix 'Voice Tx Device Mute' 0 0 0");
-        execRoot("tinymix 'Voip Tx Mute' 0");
-
-        // Restore ADC volumes
-        execRoot("tinymix 'ADC1 Volume' 84");
-        execRoot("tinymix 'ADC2 Volume' 84");
-        execRoot("tinymix 'ADC3 Volume' 84");
     }
 
     /**
@@ -307,6 +314,7 @@ public class NativePCMAudioBridge {
      */
     private void captureLoop() {
         Log.i(TAG, "Starting voice capture using tinycap via stdout pipe");
+        Log.i(TAG, "Remote RTP endpoint: " + remoteHost + ":" + remotePort);
 
         byte[] pcmBuffer = new byte[BUFFER_SIZE];
         byte[] rtpPacket = new byte[RTP_HEADER_SIZE + FRAME_SIZE];
@@ -314,7 +322,7 @@ public class NativePCMAudioBridge {
 
         try {
             // Start tinycap to capture voice call audio to stdout
-            // Using /dev/stdout for output so we can read from process stdout
+            // Device 0 on card 0 typically maps to MultiMedia1 when mixer is configured
             String tinycapCmd = String.format(
                 "tinycap /dev/stdout -D 0 -d 0 -c 1 -r %d -b 16 2>/dev/null",
                 SAMPLE_RATE
@@ -328,22 +336,43 @@ public class NativePCMAudioBridge {
             // Skip WAV header (44 bytes) that tinycap prepends
             byte[] wavHeader = new byte[44];
             int headerRead = 0;
-            while (headerRead < 44 && running) {
+            int headerAttempts = 0;
+            while (headerRead < 44 && running && headerAttempts < 100) {
                 int r = audioIn.read(wavHeader, headerRead, 44 - headerRead);
                 if (r <= 0) {
                     Thread.sleep(10);
+                    headerAttempts++;
                     continue;
                 }
                 headerRead += r;
             }
-            Log.d(TAG, "Skipped " + headerRead + " bytes WAV header");
+
+            if (headerRead < 44) {
+                Log.e(TAG, "Failed to read WAV header from tinycap (only got " + headerRead + " bytes)");
+                Log.w(TAG, "Falling back to AudioRecord capture");
+                captureWithAudioRecord();
+                return;
+            }
+
+            Log.i(TAG, "Tinycap started successfully, skipped " + headerRead + " bytes WAV header");
 
             int packetCount = 0;
+            int silentPackets = 0;
+            long lastLogTime = System.currentTimeMillis();
+
             while (running && !Thread.interrupted()) {
                 int bytesRead = audioIn.read(pcmBuffer);
                 if (bytesRead <= 0) {
                     Thread.sleep(5);
                     continue;
+                }
+
+                // Check if audio is silent (all zeros or very low amplitude)
+                boolean isSilent = isAudioSilent(pcmBuffer, bytesRead);
+                if (isSilent) {
+                    silentPackets++;
+                } else {
+                    silentPackets = 0; // Reset on non-silent audio
                 }
 
                 // Convert PCM to u-law
@@ -366,8 +395,12 @@ public class NativePCMAudioBridge {
                 timestamp += FRAME_SIZE;
                 packetCount++;
 
-                if (packetCount % 500 == 0) {
-                    Log.d(TAG, "Capture: sent " + packetCount + " RTP packets");
+                // Log every 5 seconds
+                long now = System.currentTimeMillis();
+                if (now - lastLogTime >= 5000) {
+                    Log.d(TAG, "Capture: sent " + packetCount + " RTP packets to " + remoteHost + ":" + remotePort +
+                          (silentPackets > 100 ? " (SILENT - check mixer routing!)" : ""));
+                    lastLogTime = now;
                 }
             }
 
@@ -382,6 +415,20 @@ public class NativePCMAudioBridge {
         }
 
         Log.i(TAG, "Capture loop ended");
+    }
+
+    /**
+     * Check if audio buffer is silent (all zeros or very low amplitude)
+     */
+    private boolean isAudioSilent(byte[] buffer, int length) {
+        int threshold = 100; // Amplitude threshold for silence detection
+        ByteBuffer bb = ByteBuffer.wrap(buffer).order(ByteOrder.LITTLE_ENDIAN);
+        int maxAmplitude = 0;
+        for (int i = 0; i < length / 2 && bb.remaining() >= 2; i++) {
+            int sample = Math.abs(bb.getShort());
+            if (sample > maxAmplitude) maxAmplitude = sample;
+        }
+        return maxAmplitude < threshold;
     }
 
     /**
@@ -476,16 +523,98 @@ public class NativePCMAudioBridge {
 
     /**
      * Receive RTP and play into voice call
-     * Uses AudioTrack with USAGE_VOICE_COMMUNICATION for incall audio injection
-     * This is more reliable than tinyplay for routing to the voice call
+     * Tries tinyplay first (more reliable for incall_music), then AudioTrack fallback
      */
     private void playbackLoop() {
-        Log.i(TAG, "Starting RTP to voice call playback via AudioTrack");
+        Log.i(TAG, "Starting RTP to voice call playback");
 
-        // Go directly to AudioTrack - it's more reliable for incall music injection
-        playbackWithAudioTrack();
+        // Try tinyplay first - it routes more reliably to incall_music on SM6150
+        if (!playbackWithTinyplay()) {
+            Log.w(TAG, "Tinyplay failed, falling back to AudioTrack");
+            playbackWithAudioTrack();
+        }
 
         Log.i(TAG, "Playback loop ended");
+    }
+
+    /**
+     * Use tinyplay for incall music injection - more reliable on Qualcomm
+     * Routes directly through ALSA to the incall_music mixer path
+     */
+    private boolean playbackWithTinyplay() {
+        Log.i(TAG, "Starting tinyplay for incall_music injection");
+
+        Process tinyplayProc = null;
+        DataOutputStream playbackOut = null;
+
+        try {
+            // Ensure incall music mixer is enabled for MultiMedia2
+            execRoot("tinymix 'Incall_Music Audio Mixer MultiMedia2' 1");
+
+            // Start tinyplay reading from stdin
+            // Device 1 typically maps to MultiMedia2 on SM6150
+            String tinyplayCmd = String.format(
+                "tinyplay /dev/stdin -D 0 -d 1 -c 1 -r %d -b 16",
+                SAMPLE_RATE
+            );
+            Log.i(TAG, "Starting tinyplay: " + tinyplayCmd);
+
+            tinyplayProc = Runtime.getRuntime().exec(new String[]{"su", "-c", tinyplayCmd});
+            playbackOut = new DataOutputStream(tinyplayProc.getOutputStream());
+
+            // Write WAV header
+            byte[] wavHeader = createWavHeader();
+            playbackOut.write(wavHeader);
+            playbackOut.flush();
+
+            byte[] rtpPacket = new byte[1500];
+            DatagramPacket packet = new DatagramPacket(rtpPacket, rtpPacket.length);
+            int packetCount = 0;
+            long lastLogTime = System.currentTimeMillis();
+
+            while (running && !Thread.interrupted()) {
+                try {
+                    rtpSocket.receive(packet);
+
+                    if (packet.getLength() < RTP_HEADER_SIZE) continue;
+
+                    int payloadLength = packet.getLength() - RTP_HEADER_SIZE;
+                    byte[] ulawData = new byte[payloadLength];
+                    System.arraycopy(rtpPacket, RTP_HEADER_SIZE, ulawData, 0, payloadLength);
+
+                    // Convert u-law to PCM
+                    byte[] pcmData = ulawToPcm(ulawData);
+
+                    // Write to tinyplay
+                    playbackOut.write(pcmData);
+                    playbackOut.flush();
+
+                    packetCount++;
+
+                    // Log every 5 seconds
+                    long now = System.currentTimeMillis();
+                    if (now - lastLogTime >= 5000) {
+                        Log.d(TAG, "Tinyplay playback: received " + packetCount + " RTP packets");
+                        lastLogTime = now;
+                    }
+
+                } catch (java.net.SocketTimeoutException e) {
+                    // Normal timeout - no data received
+                }
+            }
+
+            return true;
+
+        } catch (Exception e) {
+            Log.e(TAG, "Tinyplay playback error: " + e.getMessage(), e);
+            return false;
+
+        } finally {
+            try {
+                if (playbackOut != null) playbackOut.close();
+            } catch (Exception e) {}
+            if (tinyplayProc != null) tinyplayProc.destroy();
+        }
     }
 
     /**
@@ -519,29 +648,32 @@ public class NativePCMAudioBridge {
 
     /**
      * Use Android's AudioTrack for playback with USAGE_VOICE_COMMUNICATION
-     * This routes audio through the voice call path on modern Android
+     * This routes audio through the incall_music path for voice call injection
      */
     private void playbackWithAudioTrack() {
-        Log.i(TAG, "Using AudioTrack for playback with voice communication usage");
+        Log.i(TAG, "Using AudioTrack for incall music playback");
 
         try {
-            // Try to override audio permission via appops
+            // Grant audio permissions via appops
             execRoot("appops set com.shreeyash.gateway PLAY_AUDIO allow");
 
-            // Use AudioTrack with AudioAttributes for proper voice call routing
+            // Ensure incall music routing is enabled (use MultiMedia2 to avoid echo)
+            execRoot("tinymix 'Incall_Music Audio Mixer MultiMedia2' 1");
+
             int minBufferSize = android.media.AudioTrack.getMinBufferSize(
                 SAMPLE_RATE,
                 android.media.AudioFormat.CHANNEL_OUT_MONO,
                 android.media.AudioFormat.ENCODING_PCM_16BIT
             );
 
-            // Build AudioAttributes for voice communication
+            // Build AudioAttributes for incall music injection
+            // USAGE_VOICE_COMMUNICATION routes through the voice call path
             android.media.AudioAttributes audioAttributes = new android.media.AudioAttributes.Builder()
                 .setUsage(android.media.AudioAttributes.USAGE_VOICE_COMMUNICATION)
                 .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
+                .setFlags(android.media.AudioAttributes.FLAG_LOW_LATENCY)
                 .build();
 
-            // Build AudioFormat
             android.media.AudioFormat audioFormat = new android.media.AudioFormat.Builder()
                 .setSampleRate(SAMPLE_RATE)
                 .setEncoding(android.media.AudioFormat.ENCODING_PCM_16BIT)
@@ -551,18 +683,37 @@ public class NativePCMAudioBridge {
             android.media.AudioTrack audioTrack = new android.media.AudioTrack(
                 audioAttributes,
                 audioFormat,
-                Math.max(minBufferSize * 2, 4096),
+                Math.max(minBufferSize * 4, 8192),  // Larger buffer for stability
                 android.media.AudioTrack.MODE_STREAM,
                 android.media.AudioManager.AUDIO_SESSION_ID_GENERATE
             );
 
             if (audioTrack.getState() != android.media.AudioTrack.STATE_INITIALIZED) {
-                Log.e(TAG, "AudioTrack init failed, trying legacy stream");
-                playbackWithLegacyAudioTrack();
-                return;
+                Log.w(TAG, "AudioTrack VOICE_COMMUNICATION failed, trying INCALL_MUSIC");
+                audioTrack.release();
+
+                // Try with USAGE_ASSISTANCE_SONIFICATION which can route to incall
+                audioAttributes = new android.media.AudioAttributes.Builder()
+                    .setUsage(android.media.AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
+                    .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build();
+
+                audioTrack = new android.media.AudioTrack(
+                    audioAttributes,
+                    audioFormat,
+                    Math.max(minBufferSize * 4, 8192),
+                    android.media.AudioTrack.MODE_STREAM,
+                    android.media.AudioManager.AUDIO_SESSION_ID_GENERATE
+                );
+
+                if (audioTrack.getState() != android.media.AudioTrack.STATE_INITIALIZED) {
+                    Log.e(TAG, "AudioTrack init failed, trying legacy stream");
+                    playbackWithLegacyAudioTrack();
+                    return;
+                }
             }
 
-            Log.i(TAG, "AudioTrack initialized with USAGE_VOICE_COMMUNICATION");
+            Log.i(TAG, "AudioTrack initialized for incall playback");
             audioTrack.play();
 
             byte[] rtpPacket = new byte[1500];
@@ -580,11 +731,11 @@ public class NativePCMAudioBridge {
                     System.arraycopy(rtpPacket, RTP_HEADER_SIZE, ulawData, 0, payloadLength);
 
                     byte[] pcmData = ulawToPcm(ulawData);
-                    audioTrack.write(pcmData, 0, pcmData.length);
+                    int written = audioTrack.write(pcmData, 0, pcmData.length);
 
                     packetCount++;
                     if (packetCount % 500 == 0) {
-                        Log.d(TAG, "AudioTrack playback: " + packetCount + " packets");
+                        Log.d(TAG, "AudioTrack playback: " + packetCount + " packets, last write: " + written);
                     }
 
                 } catch (java.net.SocketTimeoutException e) {

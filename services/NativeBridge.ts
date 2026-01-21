@@ -247,8 +247,8 @@ export class NativeBridge {
     this.onGsmIncomingCallCallback = callback;
   }
 
-  static async makeGsmCallForAsterisk(slot: 0 | 1, phoneNumber: string): Promise<boolean> {
-    console.log(`[GSM_OUTBOUND] Asterisk requested GSM call to ${phoneNumber} on slot ${slot}`);
+  static async makeGsmCallForSip(slot: 0 | 1, phoneNumber: string): Promise<boolean> {
+    console.log(`[GSM_OUTBOUND] SIP requested GSM call to ${phoneNumber} on slot ${slot}`);
     try {
       await this.dialGsmSilently(slot, phoneNumber);
       return true;

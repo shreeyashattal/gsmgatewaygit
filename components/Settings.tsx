@@ -21,28 +21,86 @@ const Settings: React.FC<SettingsProps> = ({ config, setConfig }) => {
   return (
     <div className="space-y-8 pb-32">
       {/* Info Banner */}
-      <div className="bg-green-500/5 border border-green-500/20 rounded-3xl p-6">
-        <h2 className="text-xs font-black text-green-400 uppercase tracking-widest mb-2">Asterisk AMI Bridge</h2>
+      <div className="bg-blue-500/5 border border-blue-500/20 rounded-3xl p-6">
+        <h2 className="text-xs font-black text-blue-400 uppercase tracking-widest mb-2">Direct SIP Gateway</h2>
         <p className="text-[10px] text-gray-500 leading-relaxed">
-          This gateway bridges GSM calls to <strong>Asterisk PBX</strong> via the Manager Interface (AMI) on <code className="text-blue-400">127.0.0.1:5038</code>.
-          AMI credentials are pre-configured. Configure the dialplan context and extension for each SIM channel below.
+          This gateway bridges GSM calls directly via <strong>SIP protocol</strong>.
+          In <strong>Trunk Mode</strong>, the PBX registers with this device.
+          Otherwise, specify your PBX address below.
         </p>
       </div>
 
-      {/* AMI Connection Info */}
-      <div className="bg-[#0d0d0d] border border-white/5 rounded-3xl p-5">
-        <div className="flex items-center justify-between">
-          <div>
-            <p className="text-[9px] font-black text-gray-500 uppercase tracking-widest">AMI Connection</p>
-            <p className="text-sm font-mono text-blue-400 mt-1">127.0.0.1:5038</p>
-          </div>
-          <div className="text-right">
-            <p className="text-[9px] font-black text-gray-500 uppercase tracking-widest">Status</p>
-            <p className="text-sm font-black text-green-400 mt-1">
-              {daemon.state.bridgeStatus === 'CONNECTED' ? 'CONNECTED' :
-               daemon.state.bridgeStatus === 'CONNECTING' ? 'CONNECTING...' :
-               daemon.state.bridgeStatus === 'ERROR' ? 'ERROR' : 'DISCONNECTED'}
-            </p>
+      {/* PBX Connection Settings */}
+      <div className="bg-[#0d0d0d] border border-white/5 rounded-3xl overflow-hidden shadow-2xl">
+        <div className="p-5 bg-white/5 border-b border-white/5 flex items-center justify-between">
+          <h3 className="text-[10px] font-black text-white tracking-[0.2em] uppercase">
+            PBX Connection
+          </h3>
+          <label className="flex items-center gap-2 cursor-pointer">
+            <span className="text-[9px] font-bold text-gray-500 uppercase">
+              {config.trunkMode ? 'Trunk Mode' : 'Registration Mode'}
+            </span>
+            <div
+              onClick={() => setConfig({ ...config, trunkMode: !config.trunkMode })}
+              className={`w-10 h-5 rounded-full transition-colors ${config.trunkMode ? 'bg-blue-500' : 'bg-gray-700'} relative`}
+            >
+              <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all ${config.trunkMode ? 'left-5' : 'left-0.5'}`} />
+            </div>
+          </label>
+        </div>
+
+        <div className="p-6 space-y-6">
+          {config.trunkMode ? (
+            <div className="bg-blue-500/5 border border-blue-500/20 rounded-2xl p-4">
+              <p className="text-[10px] text-blue-400 font-bold uppercase tracking-wider mb-2">Trunk Mode Active</p>
+              <p className="text-[9px] text-gray-500 leading-relaxed">
+                The gateway is listening for incoming SIP connections. Configure your PBX to register
+                with this device at <code className="text-green-400">port {config.localSipPort || 5080}</code>.
+              </p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 gap-6">
+              <InputGroup label="PBX Host">
+                <input
+                  type="text"
+                  value={config.pbxHost || ''}
+                  onChange={(e) => setConfig({ ...config, pbxHost: e.target.value })}
+                  placeholder="192.168.1.100"
+                  className="w-full bg-black border border-white/10 rounded-2xl p-3 text-xs font-mono text-blue-400 outline-none focus:border-blue-500"
+                />
+              </InputGroup>
+              <InputGroup label="SIP Port">
+                <input
+                  type="number"
+                  value={config.pbxPort || 5060}
+                  onChange={(e) => setConfig({ ...config, pbxPort: parseInt(e.target.value) })}
+                  placeholder="5060"
+                  className="w-full bg-black border border-white/10 rounded-2xl p-3 text-xs font-mono text-gray-400 outline-none focus:border-blue-500"
+                />
+              </InputGroup>
+            </div>
+          )}
+
+          <div className="grid grid-cols-2 gap-6">
+            <InputGroup label="Local SIP Port">
+              <input
+                type="number"
+                value={config.localSipPort || 5080}
+                onChange={(e) => setConfig({ ...config, localSipPort: parseInt(e.target.value) })}
+                placeholder="5080"
+                className="w-full bg-black border border-white/10 rounded-2xl p-3 text-xs font-mono text-gray-400 outline-none focus:border-blue-500"
+              />
+            </InputGroup>
+            <div className="flex items-end">
+              <div className="bg-black/50 rounded-2xl p-3 border border-white/5 w-full">
+                <p className="text-[9px] text-gray-500 font-bold uppercase">Status</p>
+                <p className="text-sm font-black text-green-400 mt-1">
+                  {daemon.state.bridgeStatus === 'CONNECTED' ? 'REGISTERED' :
+                   daemon.state.bridgeStatus === 'CONNECTING' ? 'CONNECTING...' :
+                   config.trunkMode ? 'LISTENING' : 'DISCONNECTED'}
+                </p>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -68,7 +126,7 @@ const Settings: React.FC<SettingsProps> = ({ config, setConfig }) => {
           <div key={slot} className="bg-[#0d0d0d] border border-white/5 rounded-3xl overflow-hidden shadow-2xl">
             <div className="p-5 bg-white/5 border-b border-white/5 flex items-center justify-between">
               <h3 className="text-[10px] font-black text-white tracking-[0.2em] uppercase">
-                SIM {slot + 1} Channel Configuration
+                SIM {slot + 1} Channel
               </h3>
               <label className="flex items-center gap-2 cursor-pointer">
                 <span className="text-[9px] font-bold text-gray-500 uppercase">
@@ -85,22 +143,22 @@ const Settings: React.FC<SettingsProps> = ({ config, setConfig }) => {
 
             <div className="p-6 space-y-6">
               <div className="grid grid-cols-2 gap-6">
-                <InputGroup label="Dialplan Context">
+                <InputGroup label="SIP Username">
                   <input
                     type="text"
-                    value={channel.asteriskContext}
-                    onChange={(e) => handleChannelChange(slot as 0 | 1, 'asteriskContext', e.target.value)}
-                    placeholder="from-gsm1"
+                    value={channel.sipUsername || ''}
+                    onChange={(e) => handleChannelChange(slot as 0 | 1, 'sipUsername', e.target.value)}
+                    placeholder={`sim${slot + 1}`}
                     className="w-full bg-black border border-white/10 rounded-2xl p-3 text-xs font-mono text-blue-400 outline-none focus:border-blue-500"
                   />
                 </InputGroup>
-                <InputGroup label="Default Extension">
+                <InputGroup label="SIP Password">
                   <input
-                    type="text"
-                    value={channel.defaultExtension}
-                    onChange={(e) => handleChannelChange(slot as 0 | 1, 'defaultExtension', e.target.value)}
-                    placeholder="s"
-                    className="w-full bg-black border border-white/10 rounded-2xl p-3 text-xs font-mono text-blue-400 outline-none focus:border-blue-500"
+                    type="password"
+                    value={channel.sipPassword || ''}
+                    onChange={(e) => handleChannelChange(slot as 0 | 1, 'sipPassword', e.target.value)}
+                    placeholder="Optional"
+                    className="w-full bg-black border border-white/10 rounded-2xl p-3 text-xs font-mono text-gray-400 outline-none focus:border-blue-500"
                   />
                 </InputGroup>
               </div>
@@ -135,12 +193,12 @@ const Settings: React.FC<SettingsProps> = ({ config, setConfig }) => {
                 <p className="text-[9px] text-gray-500 font-bold uppercase tracking-wider mb-2">Channel Info</p>
                 <div className="grid grid-cols-2 gap-4 text-[10px]">
                   <div>
-                    <span className="text-gray-600">Incoming GSM → </span>
-                    <span className="text-green-400 font-mono">{channel.asteriskContext}:{channel.defaultExtension}</span>
+                    <span className="text-gray-600">SIP User: </span>
+                    <span className="text-green-400 font-mono">{channel.sipUsername || `sim${slot + 1}`}</span>
                   </div>
                   <div>
-                    <span className="text-gray-600">RTP Stream → </span>
-                    <span className="text-blue-400 font-mono">127.0.0.1:{channel.rtpPort}</span>
+                    <span className="text-gray-600">RTP Stream: </span>
+                    <span className="text-blue-400 font-mono">UDP:{channel.rtpPort}</span>
                   </div>
                 </div>
               </div>
@@ -152,13 +210,13 @@ const Settings: React.FC<SettingsProps> = ({ config, setConfig }) => {
       {/* Global Settings */}
       <div className="bg-[#0d0d0d] border border-white/5 rounded-3xl overflow-hidden">
         <div className="p-5 bg-white/5 border-b border-white/5">
-          <h3 className="text-[10px] font-black text-white tracking-[0.2em] uppercase">Global Settings</h3>
+          <h3 className="text-[10px] font-black text-white tracking-[0.2em] uppercase">Gateway Options</h3>
         </div>
         <div className="p-6 space-y-4">
           <div className="flex items-center justify-between">
             <div>
               <p className="text-xs font-bold text-white">Auto-Answer GSM Calls</p>
-              <p className="text-[9px] text-gray-500 mt-1">Automatically answer incoming GSM calls and bridge to Asterisk</p>
+              <p className="text-[9px] text-gray-500 mt-1">Automatically answer incoming GSM calls and bridge to PBX</p>
             </div>
             <div
               onClick={() => setConfig({ ...config, autoAnswer: !config.autoAnswer })}
@@ -170,8 +228,8 @@ const Settings: React.FC<SettingsProps> = ({ config, setConfig }) => {
 
           <div className="flex items-center justify-between pt-4 border-t border-white/5">
             <div>
-              <p className="text-xs font-bold text-white">Speakerphone Mode</p>
-              <p className="text-[9px] text-gray-500 mt-1">Route audio through device speaker (for debugging)</p>
+              <p className="text-xs font-bold text-white">Debug Audio (Speaker)</p>
+              <p className="text-[9px] text-gray-500 mt-1">Route audio through device speaker for debugging</p>
             </div>
             <div
               onClick={() => setConfig({ ...config, speakerphoneOn: !config.speakerphoneOn })}

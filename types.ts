@@ -2,8 +2,8 @@ export enum CallState {
   IDLE = 'IDLE',
   INCOMING_GSM = 'INCOMING_GSM',
   OUTGOING_GSM = 'OUTGOING_GSM',
-  INCOMING_ASTERISK = 'INCOMING_ASTERISK',
-  OUTGOING_ASTERISK = 'OUTGOING_ASTERISK',
+  INCOMING_SIP = 'INCOMING_SIP',
+  OUTGOING_SIP = 'OUTGOING_SIP',
   BRIDGING = 'BRIDGING',
   TERMINATING = 'TERMINATING',
   ERROR = 'ERROR'
@@ -36,29 +36,32 @@ export interface LogEntry {
 
 export interface ChannelConfig {
   enabled: boolean;
-  asteriskContext: string;      // Dialplan context for incoming GSM calls
-  defaultExtension: string;     // Default extension to dial
+  sipUsername: string;          // SIP username for this SIM (e.g., "sim1")
+  sipPassword: string;          // SIP password (optional for trunk mode)
   codec: 'PCMU' | 'PCMA' | 'OPUS' | 'G722';
-  rtpPort: number;              // RTP port for this channel (5004 or 5006)
+  rtpPort: number;              // RTP port for this channel (10000 or 10002)
 }
 
 export interface GatewayConfig {
   channels: [ChannelConfig, ChannelConfig];
+  pbxHost: string;              // PBX IP address (leave empty for trunk mode)
+  pbxPort: number;              // SIP port (default 5060)
+  localSipPort: number;         // Local SIP listen port (default 5080)
+  trunkMode: boolean;           // If true, PBX registers with us instead
   autoAnswer: boolean;
   rootLevel: boolean;
   jitterBufferMs: number;
   keepAliveInterval: number;
   speakerphoneOn: boolean;
-  // AMI is hardcoded to 127.0.0.1:5038 - no config needed
 }
 
 export interface ActiveCall {
   id: string;
   simSlot: 0 | 1;
   gsmNumber: string;
-  asteriskChannel: string;
+  sipCallId: string;
   startTime: number;
-  direction: 'GSM_TO_ASTERISK' | 'ASTERISK_TO_GSM';
+  direction: 'GSM_TO_SIP' | 'SIP_TO_GSM';
   durationSeconds: number;
   signaling: string[];
   audioMetrics: {
