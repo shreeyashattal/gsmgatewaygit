@@ -1,6 +1,78 @@
 import React from 'react';
+import { SIPRegistrationState } from './types';
 
 export const APP_VERSION = "2.4.0-ROOT-STABLE";
+
+// SIP Registration State Colors and Labels
+export const SIP_STATUS_CONFIG: Record<SIPRegistrationState, {
+  label: string;
+  color: string;
+  bgColor: string;
+  borderColor: string;
+  glowColor: string;
+}> = {
+  [SIPRegistrationState.NOT_REGISTERED]: {
+    label: 'Not Registered',
+    color: 'text-gray-400',
+    bgColor: 'bg-gray-500/10',
+    borderColor: 'border-gray-500/20',
+    glowColor: 'bg-gray-500/5'
+  },
+  [SIPRegistrationState.REGISTERING]: {
+    label: 'Registering...',
+    color: 'text-amber-400',
+    bgColor: 'bg-amber-500/10',
+    borderColor: 'border-amber-500/20',
+    glowColor: 'bg-amber-500/5'
+  },
+  [SIPRegistrationState.REGISTERED]: {
+    label: 'Registered',
+    color: 'text-green-400',
+    bgColor: 'bg-green-500/10',
+    borderColor: 'border-green-500/20',
+    glowColor: 'bg-green-500/10'
+  },
+  [SIPRegistrationState.REGISTRATION_FAILED]: {
+    label: 'Failed',
+    color: 'text-red-400',
+    bgColor: 'bg-red-500/10',
+    borderColor: 'border-red-500/20',
+    glowColor: 'bg-red-500/5'
+  },
+  [SIPRegistrationState.UNREGISTERING]: {
+    label: 'Unregistering...',
+    color: 'text-orange-400',
+    bgColor: 'bg-orange-500/10',
+    borderColor: 'border-orange-500/20',
+    glowColor: 'bg-orange-500/5'
+  }
+};
+
+// Call Direction Colors
+export const CALL_DIRECTION_CONFIG = {
+  GSM_TO_SIP: {
+    label: 'GSM → SIP',
+    color: 'text-green-400',
+    bgColor: 'bg-green-500/10',
+    icon: '↗',
+    description: 'Incoming GSM call'
+  },
+  SIP_TO_GSM: {
+    label: 'SIP → GSM',
+    color: 'text-blue-400',
+    bgColor: 'bg-blue-500/10',
+    icon: '↙',
+    description: 'Outgoing GSM call'
+  }
+};
+
+// Signal Quality Labels
+export const SIGNAL_QUALITY_CONFIG = {
+  EXCELLENT: { label: 'EXCELLENT', color: 'text-green-400', threshold: -70 },
+  STABLE: { label: 'STABLE', color: 'text-blue-400', threshold: -85 },
+  FAIR: { label: 'FAIR', color: 'text-amber-400', threshold: -100 },
+  POOR: { label: 'POOR', color: 'text-red-400', threshold: -110 }
+};
 
 export const ICONS = {
   Signal: () => (
@@ -37,6 +109,31 @@ export const ICONS = {
   Phone: () => (
     <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
+    </svg>
+  ),
+  ArrowIn: () => (
+    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 14l-7 7m0 0l-7-7m7 7V3" />
+    </svg>
+  ),
+  ArrowOut: () => (
+    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 10l7-7m0 0l7 7m-7-7v18" />
+    </svg>
+  ),
+  Clock: () => (
+    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+    </svg>
+  ),
+  BarChart: () => (
+    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+    </svg>
+  ),
+  HangUp: () => (
+    <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+      <path d="M22.71,11.71a1,1,0,0,0-1.42,0l-7.07,7.07-7.07-7.07a1,1,0,1,0-1.42,1.42l7.07,7.07-7.07,7.07a1,1,0,1,0,1.42,1.42l7.07-7.07,7.07,7.07a1,1,0,0,0,1.42-1.42l-7.07-7.07,7.07-7.07A1,1,0,0,0,22.71,11.71Z" />
     </svg>
   )
 };

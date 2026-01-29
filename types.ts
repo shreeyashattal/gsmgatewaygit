@@ -16,6 +16,14 @@ export enum BridgeStatus {
   ERROR = 'ERROR'
 }
 
+export enum SIPRegistrationState {
+  NOT_REGISTERED = 'NOT_REGISTERED',
+  REGISTERING = 'REGISTERING',
+  REGISTERED = 'REGISTERED',
+  REGISTRATION_FAILED = 'REGISTRATION_FAILED',
+  UNREGISTERING = 'UNREGISTERING'
+}
+
 export enum GsmStatus {
   NOT_DETECTED = 'NOT_DETECTED',
   NO_SIM = 'NO_SIM',
@@ -36,22 +44,23 @@ export interface LogEntry {
 
 export interface ChannelConfig {
   enabled: boolean;
-  sipUsername: string;          // SIP username for this SIM (e.g., "sim1")
-  sipPassword: string;          // SIP password (optional for trunk mode)
+  sipUsername: string;          // SIP username for this SIM (e.g., "gsm_sim1")
+  sipPassword: string;          // SIP password for authentication
+  pbxHost: string;              // PBX IP/hostname for this SIM
+  pbxPort: number;              // PBX SIP port (default 5060)
+  localSipPort: number;         // Local SIP listening port (e.g., 5061 for SIM1)
   codec: 'PCMU' | 'PCMA' | 'OPUS' | 'G722';
   rtpPort: number;              // RTP port for this channel (10000 or 10002)
+  registrationInterval: number; // REGISTER interval in seconds (default 3600)
+  registerTimeout: number;      // Registration timeout in seconds (default 30)
+  enableTLS: boolean;           // Use TLS for SIP
 }
 
 export interface GatewayConfig {
   channels: [ChannelConfig, ChannelConfig];
-  pbxHost: string;              // PBX IP address (leave empty for trunk mode)
-  pbxPort: number;              // SIP port (default 5060)
-  localSipPort: number;         // Local SIP listen port (default 5080)
-  trunkMode: boolean;           // If true, PBX registers with us instead
   autoAnswer: boolean;
   rootLevel: boolean;
   jitterBufferMs: number;
-  keepAliveInterval: number;
   speakerphoneOn: boolean;
 }
 
@@ -83,6 +92,9 @@ export interface SimMetrics {
   phoneNumber: string;
   connectionType: 'Tower' | 'VoWiFi';
   networkType: string;  // '5G', 'LTE', '3G+', '3G', '2G', 'WiFi', 'Unknown'
+  sipRegistrationState: SIPRegistrationState;
+  lastRegisteredTime?: number;
+  nextRegisterTime?: number;
 }
 
 export interface BackendMetrics {

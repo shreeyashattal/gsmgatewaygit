@@ -287,6 +287,68 @@ public class SIPMessage {
     }
 
     /**
+     * Build a SIP CANCEL request
+     * CANCEL is used to terminate a pending INVITE that hasn't been answered yet.
+     * Per RFC 3261, CANCEL must have the same CSeq number as the INVITE it cancels.
+     *
+     * @param originalInvite The original INVITE message to cancel
+     * @param localIp Local IP address
+     * @param localPort Local SIP port
+     * @return CANCEL message
+     */
+    public static SIPMessage createCancel(SIPMessage originalInvite, String localIp, int localPort) {
+        SIPMessage msg = new SIPMessage();
+        msg.isRequest = true;
+        msg.method = "CANCEL";
+        msg.requestUri = originalInvite.getRequestUri();
+
+        // CANCEL must use the same branch as the original INVITE's Via
+        // But for simplicity, we'll use a new branch (which is also valid per RFC 3261)
+        String via = String.format("SIP/2.0/UDP %s:%d;branch=%s;rport",
+                                   localIp, localPort, generateBranch());
+
+        msg.headers.put("via", via);
+        msg.headers.put("from", originalInvite.getHeader("from"));
+        msg.headers.put("to", originalInvite.getHeader("to"));  // No to-tag yet (call not answered)
+        msg.headers.put("call-id", originalInvite.getHeader("call-id"));
+
+        // CSeq must match the INVITE's CSeq number but with method CANCEL
+        String inviteCseq = originalInvite.getHeader("cseq");
+        String cseqNum = inviteCseq != null ? inviteCseq.split(" ")[0] : "1";
+        msg.headers.put("cseq", cseqNum + " CANCEL");
+
+        msg.headers.put("max-forwards", "70");
+        msg.headers.put("content-length", "0");
+
+        return msg;
+    }
+
+    /**
+     * Build a SIP CANCEL request from call parameters
+     * Alternative constructor when original INVITE is not available
+     */
+    public static SIPMessage createCancel(String callId, String from, String to,
+                                          String requestUri, String localIp, int localPort, int cseq) {
+        SIPMessage msg = new SIPMessage();
+        msg.isRequest = true;
+        msg.method = "CANCEL";
+        msg.requestUri = requestUri;
+
+        String via = String.format("SIP/2.0/UDP %s:%d;branch=%s;rport",
+                                   localIp, localPort, generateBranch());
+
+        msg.headers.put("via", via);
+        msg.headers.put("from", from);
+        msg.headers.put("to", to);
+        msg.headers.put("call-id", callId);
+        msg.headers.put("cseq", cseq + " CANCEL");
+        msg.headers.put("max-forwards", "70");
+        msg.headers.put("content-length", "0");
+
+        return msg;
+    }
+
+    /**
      * Create SDP for audio (G.711 u-law)
      */
     private static String createSDP(String ip, int port) {

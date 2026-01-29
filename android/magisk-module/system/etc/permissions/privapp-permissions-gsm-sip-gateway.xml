@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    GSM-SIP Gateway Privileged Permissions
+
+    These permissions are required for:
+    - CAPTURE_AUDIO_OUTPUT: Access VOICE_CALL audio stream for recording/bridging
+    - CONTROL_INCALL_EXPERIENCE: Bind to telephony InCallService without being default dialer
+    - MODIFY_PHONE_STATE: Control phone call state (answer, hangup, etc.)
+    - READ_PRECISE_PHONE_STATE: Get detailed call state information
+    - INTERACT_ACROSS_USERS: Required for some telephony operations
+-->
+<permissions>
+    <privapp-permissions package="com.shreeyash.gateway">
+        <!-- Core audio capture permission - allows access to VOICE_CALL stream -->
+        <permission name="android.permission.CAPTURE_AUDIO_OUTPUT"/>
+
+        <!-- InCallService binding without being default dialer -->
+        <permission name="android.permission.CONTROL_INCALL_EXPERIENCE"/>
+
+        <!-- Phone state control -->
+        <permission name="android.permission.MODIFY_PHONE_STATE"/>
+        <permission name="android.permission.READ_PRECISE_PHONE_STATE"/>
+
+        <!-- Telephony operations -->
+        <permission name="android.permission.INTERACT_ACROSS_USERS"/>
+        <permission name="android.permission.INTERACT_ACROSS_USERS_FULL"/>
+
+        <!-- Call log access for caller ID -->
+        <permission name="android.permission.READ_CALL_LOG"/>
+        <permission name="android.permission.WRITE_CALL_LOG"/>
+
+        <!-- Audio routing -->
+        <permission name="android.permission.MODIFY_AUDIO_ROUTING"/>
+
+        <!-- Foreground service for calls -->
+        <permission name="android.permission.FOREGROUND_SERVICE_PHONE_CALL"/>
+
+        <!-- ConnectionService binding -->
+        <permission name="android.permission.BIND_TELECOM_CONNECTION_SERVICE"/>
+        <permission name="android.permission.MANAGE_OWN_CALLS"/>
+    </privapp-permissions>
+</permissions>

@@ -1,0 +1,6 @@
+id=gsm-sip-gateway
+name=GSM-SIP Gateway
+version=1.0.0
+versionCode=1
+author=shreeyash
+description=Installs GSM-SIP Gateway as a privileged system app with call audio capture permissions

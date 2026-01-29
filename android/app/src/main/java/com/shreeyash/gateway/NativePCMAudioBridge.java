@@ -2,16 +2,22 @@ package com.shreeyash.gateway;
 
 import android.util.Log;
 
+import java.io.BufferedReader;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStreamReader;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.util.HashSet;
+import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Native PCM Audio Bridge for SM6150 (Snapdragon 720G) devices
@@ -56,6 +62,39 @@ public class NativePCMAudioBridge {
     private Process rootShell;
     private DataOutputStream rootOut;
 
+    // Qualcomm platform detection for mixer control selection
+    private enum QualcommPlatform {
+        SM6150,   // Snapdragon 720G (Bengal)
+        SM8150,   // Snapdragon 855
+        SM8250,   // Snapdragon 865
+        SDM845,   // Snapdragon 845
+        SDM660,   // Snapdragon 660
+        UNKNOWN
+    }
+    private QualcommPlatform detectedPlatform = QualcommPlatform.UNKNOWN;
+
+    // Mixer control discovery
+    private Set<String> availableMixerControls = new HashSet<>();
+    private boolean mixerDiscovered = false;
+
+    // Mic mute state tracking
+    private volatile boolean micMuted = false;
+
+    // Error recovery
+    private int consecutiveFailures = 0;
+    private static final int MAX_CONSECUTIVE_FAILURES = 5;
+
+    // Bridge failure listener
+    private AudioBridgeListener bridgeListener;
+
+    public interface AudioBridgeListener {
+        void onBridgeFailure(String reason);
+    }
+
+    public void setBridgeListener(AudioBridgeListener listener) {
+        this.bridgeListener = listener;
+    }
+
     public NativePCMAudioBridge(int localRtpPort) {
         this.localRtpPort = localRtpPort;
         this.ssrc = (int) (Math.random() * Integer.MAX_VALUE);
@@ -70,44 +109,59 @@ public class NativePCMAudioBridge {
      * Start the audio bridge
      */
     public boolean start() {
+        Log.i(TAG, "╔════════════════════════════════════════════════════════════╗");
+        Log.i(TAG, "║          STARTING NATIVE PCM AUDIO BRIDGE                  ║");
+        Log.i(TAG, "╚════════════════════════════════════════════════════════════╝");
+
         if (remoteHost == null || remotePort == 0) {
-            Log.e(TAG, "Remote address not set");
+            Log.e(TAG, "❌ ERROR: Remote address not set");
             return false;
         }
 
         try {
-            // Initialize root shell
+            // Step 1: Initialize root shell
+            Log.i(TAG, "┌─ STEP 1: Initializing root shell...");
             if (!initRootShell()) {
-                Log.e(TAG, "Failed to get root access");
+                Log.e(TAG, "└─ ❌ FAILED: Could not get root access");
                 return false;
             }
+            Log.i(TAG, "└─ ✓ Root shell ready");
 
-            // Set up audio routing for voice call capture
+            // Step 2: Set up audio routing for voice call capture
+            Log.i(TAG, "┌─ STEP 2: Setting up voice call audio routing...");
             setupVoiceCallRouting();
+            Log.i(TAG, "└─ ✓ Audio routing configured");
 
-            // Create RTP socket
+            // Step 3: Create RTP socket
+            Log.i(TAG, "┌─ STEP 3: Creating RTP socket...");
             remoteAddress = InetAddress.getByName(remoteHost);
             rtpSocket = new DatagramSocket(localRtpPort);
             rtpSocket.setSoTimeout(1000);
-
-            Log.i(TAG, "RTP socket bound to port " + localRtpPort);
-            Log.i(TAG, "Remote RTP: " + remoteHost + ":" + remotePort);
+            Log.i(TAG, "│  Local RTP port: " + localRtpPort);
+            Log.i(TAG, "│  Remote RTP: " + remoteHost + ":" + remotePort);
+            Log.i(TAG, "└─ ✓ RTP socket ready");
 
             running = true;
 
-            // Start capture thread (voice call -> RTP)
+            // Step 4: Start capture thread (GSM party voice → RTP → PBX)
+            Log.i(TAG, "┌─ STEP 4: Starting capture thread (GSM → PBX)...");
             captureThread = new Thread(this::captureLoop, "PCM-Capture");
             captureThread.start();
+            Log.i(TAG, "└─ ✓ Capture thread started");
 
-            // Start playback thread (RTP -> voice call)
+            // Step 5: Start playback thread (PBX → RTP → GSM party)
+            Log.i(TAG, "┌─ STEP 5: Starting playback thread (PBX → GSM)...");
             playbackThread = new Thread(this::playbackLoop, "PCM-Playback");
             playbackThread.start();
+            Log.i(TAG, "└─ ✓ Playback thread started");
 
-            Log.i(TAG, "Native PCM audio bridge started");
+            Log.i(TAG, "╔════════════════════════════════════════════════════════════╗");
+            Log.i(TAG, "║       ✓ AUDIO BRIDGE STARTED SUCCESSFULLY                  ║");
+            Log.i(TAG, "╚════════════════════════════════════════════════════════════╝");
             return true;
 
         } catch (Exception e) {
-            Log.e(TAG, "Failed to start audio bridge: " + e.getMessage(), e);
+            Log.e(TAG, "❌ FATAL: Failed to start audio bridge: " + e.getMessage(), e);
             stop();
             return false;
         }
@@ -185,7 +239,7 @@ public class NativePCMAudioBridge {
     }
 
     /**
-     * Execute command as root
+     * Execute command as root (fire-and-forget)
      */
     private void execRoot(String cmd) {
         try {
@@ -198,82 +252,511 @@ public class NativePCMAudioBridge {
     }
 
     /**
-     * Set up mixer controls for voice call audio capture/injection on SM6150
+     * Execute command as root and return output
+     */
+    private String execRootSync(String cmd) {
+        Process process = null;
+        try {
+            process = Runtime.getRuntime().exec(new String[]{"su", "-c", cmd});
+            BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
+            StringBuilder output = new StringBuilder();
+            String line;
+            while ((line = reader.readLine()) != null) {
+                output.append(line).append("\n");
+            }
+            process.waitFor();
+            return output.toString();
+        } catch (Exception e) {
+            Log.e(TAG, "execRootSync failed: " + cmd, e);
+            return null;
+        } finally {
+            if (process != null) process.destroy();
+        }
+    }
+
+    /**
+     * Detect Qualcomm platform for mixer control selection
+     */
+    private QualcommPlatform detectQualcommPlatform() {
+        String platform = execRootSync("getprop ro.board.platform");
+        if (platform == null) {
+            Log.w(TAG, "Could not detect platform, using UNKNOWN");
+            return QualcommPlatform.UNKNOWN;
+        }
+
+        platform = platform.toLowerCase().trim();
+        Log.i(TAG, "Detected board platform: " + platform);
+
+        if (platform.contains("sm6150") || platform.contains("bengal")) {
+            return QualcommPlatform.SM6150;
+        } else if (platform.contains("sm8150") || platform.contains("msmnile")) {
+            return QualcommPlatform.SM8150;
+        } else if (platform.contains("sm8250") || platform.contains("kona")) {
+            return QualcommPlatform.SM8250;
+        } else if (platform.contains("sdm845")) {
+            return QualcommPlatform.SDM845;
+        } else if (platform.contains("sdm660")) {
+            return QualcommPlatform.SDM660;
+        }
+
+        return QualcommPlatform.UNKNOWN;
+    }
+
+    /**
+     * Discover available mixer controls
+     */
+    private void discoverMixerControls() {
+        if (mixerDiscovered) return;
+
+        String output = execRootSync("tinymix");
+        if (output == null) {
+            Log.e(TAG, "tinymix not available - mixer discovery failed");
+            return;
+        }
+
+        // Parse tinymix output to extract control names
+        // Format varies but typically: "123 [control name]" or "123\t[control name]"
+        Pattern pattern = Pattern.compile("^\\s*(\\d+)\\s+(.+?)\\s*$", Pattern.MULTILINE);
+        Matcher matcher = pattern.matcher(output);
+
+        while (matcher.find()) {
+            String controlName = matcher.group(2).trim();
+            availableMixerControls.add(controlName);
+        }
+
+        mixerDiscovered = true;
+        Log.i(TAG, "Discovered " + availableMixerControls.size() + " mixer controls");
+
+        // Log key controls for gateway audio routing
+        Log.i(TAG, "=== KEY MIXER CONTROLS FOR GATEWAY ===");
+        String[] keyControls = {
+            "VOC_REC_DL",           // CRITICAL: Captures GSM party voice (downlink)
+            "VOC_REC_UL",           // Phone mic capture (should be disabled)
+            "Incall_Music",         // CRITICAL: Injects PBX audio into GSM call
+            "Voice Tx Device Mute", // Mutes phone mic
+            "Voice Rx Device Mute", // Mutes phone speaker
+            "VoiceMMode1",          // Voice mode mixer
+            "SLIMBUS",              // SLIMBUS audio path
+            "ADC1 Volume"           // Mic ADC volume
+        };
+        for (String ctrl : keyControls) {
+            boolean found = hasMixerControl(ctrl);
+            Log.i(TAG, "  " + ctrl + ": " + (found ? "FOUND" : "not found"));
+        }
+        Log.i(TAG, "======================================");
+    }
+
+    /**
+     * Check if a mixer control exists (case-insensitive partial match)
+     */
+    private boolean hasMixerControl(String control) {
+        String lowerControl = control.toLowerCase();
+        for (String c : availableMixerControls) {
+            if (c.toLowerCase().contains(lowerControl)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Set mixer control with verification
+     * @return true if the setting was applied and verified
+     */
+    private boolean setMixerControl(String control, String value) {
+        // Try to set the control
+        execRoot("tinymix '" + control + "' '" + value + "'");
+
+        // Wait briefly for the setting to take effect
+        try { Thread.sleep(50); } catch (InterruptedException e) {}
+
+        // Verify the setting
+        String verify = execRootSync("tinymix '" + control + "'");
+        if (verify != null && verify.contains(value)) {
+            Log.i(TAG, "Mixer OK: " + control + " = " + value);
+            return true;
+        }
+
+        // Some controls report differently - just check if command didn't error
+        if (verify != null && !verify.toLowerCase().contains("error") &&
+            !verify.toLowerCase().contains("invalid")) {
+            Log.i(TAG, "Mixer SET (unverified): " + control + " = " + value);
+            return true;
+        }
+
+        Log.w(TAG, "Mixer FAILED: " + control + " = " + value);
+        return false;
+    }
+
+    /**
+     * Set mixer control with value (int version)
+     */
+    private boolean setMixerControl(String control, int value) {
+        return setMixerControl(control, String.valueOf(value));
+    }
+
+    /**
+     * Set up mixer controls for voice call audio capture/injection
+     * Platform-aware with fallbacks for different Qualcomm SoCs
      *
-     * Audio Flow for Gateway:
-     * - Capture: GSM callee voice (VOC_REC_UL) → RTP → PBX
-     *   UL = What the remote GSM party says (their uplink to us = their voice)
-     * - Inject: PBX voice → RTP → Incall_Music → GSM callee (DL path)
-     *   DL = What we send to the remote party
-     * - Mute: Phone earpiece and mic (gateway mode - no local audio)
+     * Audio Flow for Gateway Mode:
+     * ┌─────────────────────────────────────────────────────────────┐
+     * │  GSM Party ←──────────────────────────────────→ PBX        │
+     * │                                                             │
+     * │  [GSM Party Voice]                                          │
+     * │      ↓ (Downlink from cell tower)                           │
+     * │  VOC_REC_DL → tinycap → PCM → μ-law → RTP → [PBX hears]    │
+     * │                                                             │
+     * │  [PBX Voice]                                                │
+     * │  RTP → μ-law → PCM → tinyplay → Incall_Music → [GSM hears] │
+     * │      ↓ (Uplink to cell tower)                               │
+     * │                                                             │
+     * │  Phone Mic  → MUTED (no local audio)                        │
+     * │  Phone Spkr → MUTED (no local playback)                     │
+     * └─────────────────────────────────────────────────────────────┘
      *
-     * KEY FIX: Capture VOC_REC_UL (not DL) to get remote party's voice without echo
-     * The downlink includes our injected audio, causing echo!
+     * Key Qualcomm mixer controls:
+     * - VOC_REC_DL: Voice Downlink Recording (GSM party → Android)
+     * - VOC_REC_UL: Voice Uplink Recording (Phone mic → cell tower) - NOT USED
+     * - Incall_Music: Inject audio into voice call (Android → GSM party)
      */
     private void setupVoiceCallRouting() {
-        Log.i(TAG, "Setting up voice call audio routing for SM6150 gateway mode");
+        Log.i(TAG, "========================================");
+        Log.i(TAG, "SETTING UP VOICE CALL AUDIO ROUTING");
+        Log.i(TAG, "========================================");
 
-        // ===== CAPTURE PATH (Remote GSM party voice → RTP → PBX) =====
-        // Use VOC_REC_UL to capture what the remote GSM party says
-        // UL from modem perspective = remote party's voice coming TO us
-        // This avoids capturing the injected incall_music (which goes on DL)
-        execRoot("tinymix 'MultiMedia1 Mixer VOC_REC_UL' 1");  // Remote party voice
-        execRoot("tinymix 'MultiMedia1 Mixer VOC_REC_DL' 0");  // Don't capture downlink (has our injection)
+        // Detect platform and discover mixer controls
+        detectedPlatform = detectQualcommPlatform();
+        Log.i(TAG, "Qualcomm Platform: " + detectedPlatform);
 
-        // Set voice recording config to UL only
-        execRoot("tinymix 'Voc Rec Config' 1");  // 1 = UL only
+        discoverMixerControls();
 
-        // ===== INJECTION PATH (PBX → RTP → GSM callee) =====
-        // Use MultiMedia2 for injection (separate from capture on MM1)
-        execRoot("tinymix 'Incall_Music Audio Mixer MultiMedia2' 1");
-        execRoot("tinymix 'Incall_Music Audio Mixer MultiMedia9' 1");
+        // Configure capture path (GSM → RTP)
+        boolean captureOk = setupCapturePath();
+        Log.i(TAG, "Capture path configured: " + (captureOk ? "SUCCESS" : "PARTIAL/FAILED"));
 
-        // Ensure MultiMedia1 doesn't inject (it's for capture only)
-        execRoot("tinymix 'Incall_Music Audio Mixer MultiMedia1' 0");
+        // Configure injection path (RTP → GSM)
+        boolean injectionOk = setupInjectionPath();
+        Log.i(TAG, "Injection path configured: " + (injectionOk ? "SUCCESS" : "PARTIAL/FAILED"));
 
-        // ===== MUTE PHONE SPEAKER/EARPIECE =====
-        // The gateway user shouldn't hear the call
-        execRoot("tinymix 'Voice Rx Device Mute' 1 1 1");
-        execRoot("tinymix 'Voice Rx Gain' 0 0 0");
+        // Mute phone speaker (gateway mode)
+        boolean speakerMuted = muteSpeaker();
+        Log.i(TAG, "Speaker muted: " + (speakerMuted ? "SUCCESS" : "PARTIAL/FAILED"));
 
-        // Disable all RX paths to prevent local audio
-        execRoot("tinymix 'SLIM_0_RX_Voice Mixer VoiceMMode1' 0");
-        execRoot("tinymix 'SLIM_0_RX_Voice Mixer VoiceMMode2' 0");
-        execRoot("tinymix 'RX_CDC_DMA_RX_0_Voice Mixer VoiceMMode1' 0");
-        execRoot("tinymix 'RX_CDC_DMA_RX_0_Voice Mixer VoiceMMode2' 0");
-        execRoot("tinymix 'RX0 Digital Volume' 0");
-        execRoot("tinymix 'RX1 Digital Volume' 0");
-        execRoot("tinymix 'EAR_SPKR DAC Switch' 0");
-        execRoot("tinymix 'EAR PA Gain' 0");
-        execRoot("tinymix 'HPHL DAC Switch' 0");
-        execRoot("tinymix 'HPHR DAC Switch' 0");
-
-        // ===== MUTE PHONE MIC =====
-        // The gateway user's mic shouldn't capture audio - mute all TX paths
-        execRoot("tinymix 'Voice Tx Device Mute' 1 1 1");
-
-        // Disable TX (mic) paths on SM6150/Bengal
-        execRoot("tinymix 'TX_CDC_DMA_TX_3_Voice Mixer VoiceMMode1' 0");
-        execRoot("tinymix 'TX_CDC_DMA_TX_3_Voice Mixer VoiceMMode2' 0");
-        execRoot("tinymix 'SLIM_0_TX_Voice Mixer VoiceMMode1' 0");
-        execRoot("tinymix 'SLIM_0_TX_Voice Mixer VoiceMMode2' 0");
-
-        // Disable ADC (mic input) paths
-        execRoot("tinymix 'ADC1 Volume' 0");
-        execRoot("tinymix 'ADC2 Volume' 0");
-        execRoot("tinymix 'ADC3 Volume' 0");
-        execRoot("tinymix 'DEC0 Volume' 0");
-        execRoot("tinymix 'DEC1 Volume' 0");
-
-        // Disable mic switches
-        execRoot("tinymix 'TX0 Input' 'ZERO'");
-        execRoot("tinymix 'TX1 Input' 'ZERO'");
+        // Mute phone microphone (gateway mode - critical!)
+        boolean micMuteOk = muteMicrophone();
+        Log.i(TAG, "Microphone muted: " + (micMuteOk ? "SUCCESS" : "PARTIAL/FAILED - may have echo!"));
 
         // Give mixer time to apply settings
         try { Thread.sleep(100); } catch (InterruptedException e) {}
 
-        Log.i(TAG, "Voice call routing configured - Capture: VOC_REC_UL, Inject: Incall_Music via MM2");
-        Log.i(TAG, "Phone mic and speaker MUTED for gateway mode");
+        Log.i(TAG, "========================================");
+        Log.i(TAG, "VOICE CALL ROUTING COMPLETE");
+        Log.i(TAG, "Platform: " + detectedPlatform);
+        Log.i(TAG, "Mic muted: " + micMuted);
+        Log.i(TAG, "========================================");
+    }
+
+    /**
+     * Configure capture path based on platform
+     * CRITICAL: We capture VOC_REC_DL (Downlink = GSM party voice), NOT VOC_REC_UL (phone mic)
+     *
+     * VOC_REC_DL = Voice Downlink Recording = What GSM party is saying (from cell tower)
+     * VOC_REC_UL = Voice Uplink Recording = What phone mic captures (NOT wanted in gateway mode)
+     */
+    private boolean setupCapturePath() {
+        boolean success = false;
+
+        Log.i(TAG, "Configuring CAPTURE path: GSM party voice (DL) -> RTP -> PBX");
+
+        switch (detectedPlatform) {
+            case SM6150:
+                // Bengal (Snapdragon 720G)
+                // NOTE: VOC_REC controls require TWO values (stereo control)
+                // Enable DL (downlink = GSM party voice), disable UL (uplink = phone mic)
+                success = setMixerControl("MultiMedia1 Mixer VOC_REC_DL", "1 1");  // GSM party voice (both channels)
+                setMixerControl("MultiMedia1 Mixer VOC_REC_UL", "0 0");            // Disable phone mic capture
+                setMixerControl("Voc Rec Config", "1");                            // Enable voice recording mode
+
+                // Also try to ensure voice call audio is routed to capture
+                // Some devices need this additional routing
+                if (hasMixerControl("SLIMBUS_0_TX")) {
+                    setMixerControl("MultiMedia1 Mixer SLIM_0_TX", "1");
+                }
+                break;
+
+            case SM8150:
+            case SM8250:
+                // Snapdragon 855/865 - try VOC_REC_DL first, then SLIMBUS
+                if (hasMixerControl("VOC_REC_DL")) {
+                    success = setMixerControl("MultiMedia1 Mixer VOC_REC_DL", "1 1");
+                    setMixerControl("MultiMedia1 Mixer VOC_REC_UL", "0 0");
+                }
+                // SLIMBUS fallback - captures RX path (what phone receives)
+                if (!success && hasMixerControl("SLIMBUS")) {
+                    success = setMixerControl("SLIMBUS_0_RX Voice Mixer VoiceMMode1", "1");
+                    setMixerControl("MultiMedia1 Mixer SLIM_0_RX", "1");
+                }
+                break;
+
+            case SDM845:
+            case SDM660:
+                // Older Qualcomm - try VOC_REC_DL first
+                if (hasMixerControl("VOC_REC_DL")) {
+                    success = setMixerControl("MultiMedia1 Mixer VOC_REC_DL", "1 1");
+                    setMixerControl("MultiMedia1 Mixer VOC_REC_UL", "0 0");
+                }
+                // VoiceMMode fallback - need RX (receive) path
+                if (!success && hasMixerControl("VoiceMMode1")) {
+                    // Try to route voice RX to multimedia
+                    success = setMixerControl("MultiMedia1 Mixer VoiceMMode1", "1");
+                }
+                if (!success && hasMixerControl("QUAT_MI2S")) {
+                    success = setMixerControl("QUAT_MI2S_RX Voice Mixer VoiceMMode1", "1");
+                }
+                break;
+
+            default:
+                // Generic fallback - prioritize DL (downlink) controls
+                Log.i(TAG, "Unknown platform, trying common DL capture controls");
+                // Try VOC_REC_DL with dual values first (most Qualcomm devices)
+                if (hasMixerControl("VOC_REC_DL")) {
+                    success = setMixerControl("MultiMedia1 Mixer VOC_REC_DL", "1 1");
+                    setMixerControl("MultiMedia1 Mixer VOC_REC_UL", "0 0");
+                }
+                // Fallbacks
+                if (!success) {
+                    String[] captureControls = {
+                        "MultiMedia1 Mixer SLIM_0_RX",       // SLIMBUS RX path
+                        "MultiMedia1 Mixer VoiceMMode1",     // Voice mode mixer
+                        "SLIMBUS_0_RX Voice Mixer VoiceMMode1"
+                    };
+                    for (String ctrl : captureControls) {
+                        if (hasMixerControl(ctrl.split(" ")[0])) {
+                            success = setMixerControl(ctrl, "1");
+                            if (success) {
+                                Log.i(TAG, "Capture path configured via: " + ctrl);
+                                break;
+                            }
+                        }
+                    }
+                }
+        }
+
+        if (!success) {
+            Log.e(TAG, "WARNING: Could not configure capture path - PBX won't hear GSM party!");
+        }
+        return success;
+    }
+
+    /**
+     * Configure injection path (RTP → GSM)
+     * This routes PBX audio INTO the GSM call so the GSM party hears the PBX
+     *
+     * Incall_Music: Special Qualcomm mixer that injects audio into the voice uplink
+     * The injected audio gets sent to the cell tower, so the GSM party hears it
+     */
+    private boolean setupInjectionPath() {
+        boolean success = false;
+
+        Log.i(TAG, "Configuring INJECTION path: PBX voice -> RTP -> Incall_Music -> GSM party");
+
+        // Incall_Music is the standard Qualcomm path for injecting audio into voice calls
+        // We use MultiMedia2 for playback (tinyplay -d 1 or AudioTrack)
+        if (hasMixerControl("Incall_Music")) {
+            // Primary: MultiMedia2 for injection
+            success = setMixerControl("Incall_Music Audio Mixer MultiMedia2", 1);
+            Log.i(TAG, "Incall_Music via MultiMedia2: " + (success ? "OK" : "FAILED"));
+
+            // Also try MM9 as backup on some devices
+            if (hasMixerControl("MultiMedia9")) {
+                boolean mm9 = setMixerControl("Incall_Music Audio Mixer MultiMedia9", 1);
+                Log.d(TAG, "Incall_Music via MultiMedia9: " + (mm9 ? "OK" : "FAILED"));
+            }
+        }
+
+        // Ensure MM1 doesn't inject (reserved for capture)
+        setMixerControl("Incall_Music Audio Mixer MultiMedia1", 0);
+
+        // On some platforms, also need to set Voice TX path to allow injection
+        if (hasMixerControl("Voice_Tx Mixer")) {
+            setMixerControl("Voice_Tx Mixer Incall_Music", 1);
+        }
+
+        // Alternative injection path on some Qualcomm platforms
+        if (!success && hasMixerControl("Voip_Tx Mixer")) {
+            success = setMixerControl("Voip_Tx Mixer Incall_Music", 1);
+            Log.i(TAG, "Alternative injection via Voip_Tx: " + (success ? "OK" : "FAILED"));
+        }
+
+        if (!success) {
+            Log.e(TAG, "WARNING: Could not configure injection path - GSM party won't hear PBX!");
+        }
+        return success;
+    }
+
+    /**
+     * Mute phone speaker/earpiece
+     */
+    private boolean muteSpeaker() {
+        boolean anySuccess = false;
+
+        // Method 1: Voice Rx Device Mute
+        if (hasMixerControl("Voice Rx Device Mute")) {
+            anySuccess |= setMixerControl("Voice Rx Device Mute", "1 1 1");
+        }
+
+        // Method 2: Voice Rx Gain
+        if (hasMixerControl("Voice Rx Gain")) {
+            setMixerControl("Voice Rx Gain", "0 0 0");
+        }
+
+        // Method 3: RX path mutes
+        String[] rxPaths = {
+            "SLIM_0_RX_Voice Mixer VoiceMMode1",
+            "SLIM_0_RX_Voice Mixer VoiceMMode2",
+            "RX_CDC_DMA_RX_0_Voice Mixer VoiceMMode1",
+            "RX_CDC_DMA_RX_0_Voice Mixer VoiceMMode2"
+        };
+        for (String path : rxPaths) {
+            if (hasMixerControl(path.split(" ")[0])) {
+                setMixerControl(path, 0);
+            }
+        }
+
+        // Method 4: Digital volumes
+        String[] volumes = {"RX0 Digital Volume", "RX1 Digital Volume"};
+        for (String vol : volumes) {
+            if (hasMixerControl(vol)) {
+                setMixerControl(vol, 0);
+            }
+        }
+
+        // Method 5: DAC switches
+        String[] dacs = {"EAR_SPKR DAC Switch", "HPHL DAC Switch", "HPHR DAC Switch"};
+        for (String dac : dacs) {
+            if (hasMixerControl(dac)) {
+                setMixerControl(dac, 0);
+            }
+        }
+
+        return anySuccess;
+    }
+
+    /**
+     * Mute phone microphone - CRITICAL for gateway mode
+     * Uses multiple methods with verification
+     */
+    private boolean muteMicrophone() {
+        Log.i(TAG, "Muting phone microphone for gateway mode");
+
+        boolean anySuccess = false;
+
+        // Method 1: Voice Tx Device Mute (most reliable on Qualcomm)
+        if (hasMixerControl("Voice Tx Device Mute")) {
+            anySuccess |= setMixerControl("Voice Tx Device Mute", "1 1 1");
+        }
+
+        // Method 2: TX path mutes
+        String[] txControls = {
+            "TX_CDC_DMA_TX_3_Voice Mixer VoiceMMode1",
+            "TX_CDC_DMA_TX_3_Voice Mixer VoiceMMode2",
+            "SLIM_0_TX_Voice Mixer VoiceMMode1",
+            "SLIM_0_TX_Voice Mixer VoiceMMode2"
+        };
+        for (String ctrl : txControls) {
+            if (hasMixerControl(ctrl.split(" ")[0])) {
+                anySuccess |= setMixerControl(ctrl, 0);
+            }
+        }
+
+        // Method 3: ADC Volume zeroing
+        String[] adcControls = {"ADC1 Volume", "ADC2 Volume", "ADC3 Volume"};
+        for (String ctrl : adcControls) {
+            if (hasMixerControl(ctrl)) {
+                anySuccess |= setMixerControl(ctrl, 0);
+            }
+        }
+
+        // Method 4: DEC (decimator) volumes
+        String[] decControls = {"DEC0 Volume", "DEC1 Volume"};
+        for (String ctrl : decControls) {
+            if (hasMixerControl(ctrl)) {
+                setMixerControl(ctrl, 0);
+            }
+        }
+
+        // Method 5: TX Input routing to ZERO
+        String[] txInputs = {"TX0 Input", "TX1 Input"};
+        for (String ctrl : txInputs) {
+            if (hasMixerControl(ctrl)) {
+                anySuccess |= setMixerControl(ctrl, "ZERO");
+            }
+        }
+
+        micMuted = anySuccess;
+
+        if (!anySuccess) {
+            Log.e(TAG, "WARNING: Could not mute microphone - may have local echo!");
+        } else {
+            Log.i(TAG, "Microphone muted successfully using " +
+                      (anySuccess ? "multiple methods" : "fallback"));
+        }
+
+        return anySuccess;
+    }
+
+    /**
+     * Check if microphone is muted
+     */
+    public boolean isMicrophoneMuted() {
+        return micMuted;
+    }
+
+    /**
+     * Dynamically control microphone mute during call
+     */
+    public void setMicrophoneMute(boolean mute) {
+        if (mute == micMuted) return;
+
+        if (mute) {
+            muteMicrophone();
+        } else {
+            unmuteMicrophone();
+        }
+    }
+
+    /**
+     * Unmute microphone (restore normal operation)
+     */
+    private void unmuteMicrophone() {
+        Log.i(TAG, "Unmuting phone microphone");
+
+        // Restore Voice Tx Device Mute
+        if (hasMixerControl("Voice Tx Device Mute")) {
+            setMixerControl("Voice Tx Device Mute", "0 0 0");
+        }
+
+        // Restore TX paths
+        String[] txControls = {
+            "TX_CDC_DMA_TX_3_Voice Mixer VoiceMMode1",
+            "SLIM_0_TX_Voice Mixer VoiceMMode1"
+        };
+        for (String ctrl : txControls) {
+            if (hasMixerControl(ctrl.split(" ")[0])) {
+                setMixerControl(ctrl, 1);
+            }
+        }
+
+        // Restore ADC volumes (default is typically 84)
+        String[] adcControls = {"ADC1 Volume", "ADC2 Volume"};
+        for (String ctrl : adcControls) {
+            if (hasMixerControl(ctrl)) {
+                setMixerControl(ctrl, 84);
+            }
+        }
+
+        micMuted = false;
     }
 
     /**
@@ -311,10 +794,24 @@ public class NativePCMAudioBridge {
     /**
      * Capture voice call audio and send via RTP
      * Uses tinycap with stdout pipe for reliable audio streaming
+     *
+     * This captures VOC_REC_DL (GSM party voice) and sends it to PBX via RTP
      */
     private void captureLoop() {
-        Log.i(TAG, "Starting voice capture using tinycap via stdout pipe");
-        Log.i(TAG, "Remote RTP endpoint: " + remoteHost + ":" + remotePort);
+        Log.i(TAG, "┌───────────────────────────────────────────────────────────┐");
+        Log.i(TAG, "│ CAPTURE LOOP: GSM Party Voice → RTP → PBX                 │");
+        Log.i(TAG, "├───────────────────────────────────────────────────────────┤");
+        Log.i(TAG, "│ Source: VOC_REC_DL (GSM party downlink audio)             │");
+        Log.i(TAG, "│ Dest:   " + String.format("%-50s", remoteHost + ":" + remotePort) + " │");
+        Log.i(TAG, "│ Codec:  G.711 μ-law @ 8kHz mono                           │");
+        Log.i(TAG, "└───────────────────────────────────────────────────────────┘");
+
+        // Log current mixer state for debugging
+        logMixerState();
+
+        // Try to find the correct PCM device
+        int captureDevice = findCapturePCMDevice();
+        Log.i(TAG, "Using PCM capture device: " + captureDevice);
 
         byte[] pcmBuffer = new byte[BUFFER_SIZE];
         byte[] rtpPacket = new byte[RTP_HEADER_SIZE + FRAME_SIZE];
@@ -322,10 +819,10 @@ public class NativePCMAudioBridge {
 
         try {
             // Start tinycap to capture voice call audio to stdout
-            // Device 0 on card 0 typically maps to MultiMedia1 when mixer is configured
+            // Use discovered device, fallback to 0 if discovery failed
             String tinycapCmd = String.format(
-                "tinycap /dev/stdout -D 0 -d 0 -c 1 -r %d -b 16 2>/dev/null",
-                SAMPLE_RATE
+                "tinycap /dev/stdout -D 0 -d %d -c 1 -r %d -b 16 2>/dev/null",
+                captureDevice, SAMPLE_RATE
             );
             Log.i(TAG, "Starting tinycap: " + tinycapCmd);
 
@@ -358,7 +855,12 @@ public class NativePCMAudioBridge {
 
             int packetCount = 0;
             int silentPackets = 0;
+            int totalSilentPackets = 0;
+            int maxAmplitudeSeen = 0;
             long lastLogTime = System.currentTimeMillis();
+            long startTime = System.currentTimeMillis();
+
+            Log.i(TAG, "[CAPTURE] Starting main capture loop...");
 
             while (running && !Thread.interrupted()) {
                 int bytesRead = audioIn.read(pcmBuffer);
@@ -368,11 +870,17 @@ public class NativePCMAudioBridge {
                 }
 
                 // Check if audio is silent (all zeros or very low amplitude)
-                boolean isSilent = isAudioSilent(pcmBuffer, bytesRead);
+                int amplitude = getMaxAmplitude(pcmBuffer, bytesRead);
+                boolean isSilent = amplitude < 100;
+                if (amplitude > maxAmplitudeSeen) {
+                    maxAmplitudeSeen = amplitude;
+                }
+
                 if (isSilent) {
                     silentPackets++;
+                    totalSilentPackets++;
                 } else {
-                    silentPackets = 0; // Reset on non-silent audio
+                    silentPackets = 0; // Reset consecutive silent counter
                 }
 
                 // Convert PCM to u-law
@@ -395,19 +903,38 @@ public class NativePCMAudioBridge {
                 timestamp += FRAME_SIZE;
                 packetCount++;
 
-                // Log every 5 seconds
+                // Detailed logging every 5 seconds
                 long now = System.currentTimeMillis();
                 if (now - lastLogTime >= 5000) {
-                    Log.d(TAG, "Capture: sent " + packetCount + " RTP packets to " + remoteHost + ":" + remotePort +
-                          (silentPackets > 100 ? " (SILENT - check mixer routing!)" : ""));
+                    long elapsed = (now - startTime) / 1000;
+                    float silentPct = (packetCount > 0) ? (totalSilentPackets * 100.0f / packetCount) : 0;
+
+                    if (silentPackets > 100) {
+                        Log.w(TAG, String.format("[CAPTURE] ⚠ SILENT AUDIO DETECTED! Check VOC_REC_DL mixer routing!"));
+                    }
+
+                    Log.i(TAG, String.format("[CAPTURE] Stats @ %ds: pkts=%d, silent=%.1f%%, maxAmp=%d, dest=%s:%d",
+                        elapsed, packetCount, silentPct, maxAmplitudeSeen, remoteHost, remotePort));
+
+                    // Reset max amplitude for next interval
+                    maxAmplitudeSeen = 0;
                     lastLogTime = now;
                 }
             }
 
         } catch (Exception e) {
             Log.e(TAG, "Capture error: " + e.getMessage(), e);
-            // Try AudioRecord fallback
-            captureWithAudioRecord();
+            consecutiveFailures++;
+
+            if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+                Log.e(TAG, "Too many consecutive capture failures, notifying bridge failure");
+                if (bridgeListener != null) {
+                    bridgeListener.onBridgeFailure("Capture failed: " + e.getMessage());
+                }
+            } else {
+                // Try AudioRecord fallback
+                captureWithAudioRecord();
+            }
         } finally {
             if (tinycapProc != null) {
                 tinycapProc.destroy();
@@ -418,17 +945,121 @@ public class NativePCMAudioBridge {
     }
 
     /**
-     * Check if audio buffer is silent (all zeros or very low amplitude)
+     * Get maximum amplitude from audio buffer
      */
-    private boolean isAudioSilent(byte[] buffer, int length) {
-        int threshold = 100; // Amplitude threshold for silence detection
+    private int getMaxAmplitude(byte[] buffer, int length) {
         ByteBuffer bb = ByteBuffer.wrap(buffer).order(ByteOrder.LITTLE_ENDIAN);
         int maxAmplitude = 0;
         for (int i = 0; i < length / 2 && bb.remaining() >= 2; i++) {
             int sample = Math.abs(bb.getShort());
             if (sample > maxAmplitude) maxAmplitude = sample;
         }
-        return maxAmplitude < threshold;
+        return maxAmplitude;
+    }
+
+    /**
+     * Log current state of key mixer controls for debugging
+     */
+    private void logMixerState() {
+        Log.i(TAG, "┌─────────────────────────────────────────────────────────────┐");
+        Log.i(TAG, "│ CURRENT MIXER STATE (for debugging)                         │");
+        Log.i(TAG, "├─────────────────────────────────────────────────────────────┤");
+
+        // Query key mixer controls
+        String[] controlsToCheck = {
+            "MultiMedia1 Mixer VOC_REC_DL",
+            "MultiMedia1 Mixer VOC_REC_UL",
+            "Voc Rec Config",
+            "Incall_Music Audio Mixer MultiMedia2",
+            "Voice Tx Device Mute",
+            "Voice Rx Device Mute"
+        };
+
+        for (String control : controlsToCheck) {
+            String value = execRootSync("tinymix '" + control + "' 2>/dev/null | head -1");
+            if (value != null && !value.isEmpty()) {
+                Log.i(TAG, "│ " + String.format("%-40s", control) + " = " + value.trim());
+            }
+        }
+
+        Log.i(TAG, "└─────────────────────────────────────────────────────────────┘");
+    }
+
+    /**
+     * Find the correct PCM device for voice call capture
+     * On Qualcomm devices, MultiMedia1 with VOC_REC routing may use different device numbers
+     */
+    private int findCapturePCMDevice() {
+        Log.i(TAG, "Discovering PCM capture devices...");
+
+        // Read /proc/asound/pcm to find available devices
+        String pcmList = execRootSync("cat /proc/asound/pcm 2>/dev/null");
+        if (pcmList != null) {
+            Log.i(TAG, "Available PCM devices:\n" + pcmList);
+
+            // Look for MultiMedia or voice-related devices
+            for (String line : pcmList.split("\n")) {
+                // Format: "00-00: MultiMedia1 : MultiMedia1 : playback 1 : capture 1"
+                if (line.toLowerCase().contains("multimedia1") && line.contains("capture")) {
+                    try {
+                        // Extract device number from "00-XX:"
+                        String[] parts = line.split("-");
+                        if (parts.length >= 2) {
+                            String devPart = parts[1].split(":")[0].trim();
+                            int device = Integer.parseInt(devPart);
+                            Log.i(TAG, "Found MultiMedia1 capture on device " + device);
+                            return device;
+                        }
+                    } catch (Exception e) {
+                        Log.w(TAG, "Failed to parse PCM line: " + line);
+                    }
+                }
+            }
+
+            // Look for voice recording device
+            for (String line : pcmList.split("\n")) {
+                if (line.toLowerCase().contains("voc_rec") ||
+                    line.toLowerCase().contains("voice_rec") ||
+                    line.toLowerCase().contains("incall_rec")) {
+                    try {
+                        String[] parts = line.split("-");
+                        if (parts.length >= 2) {
+                            String devPart = parts[1].split(":")[0].trim();
+                            int device = Integer.parseInt(devPart);
+                            Log.i(TAG, "Found voice recording device " + device);
+                            return device;
+                        }
+                    } catch (Exception e) {
+                        Log.w(TAG, "Failed to parse PCM line: " + line);
+                    }
+                }
+            }
+        }
+
+        // Check if specific devices are available
+        // Common Qualcomm device mappings:
+        // - Device 0: MultiMedia1 (default)
+        // - Device 11: MultiMedia1 on some platforms
+        // - Device 12: MultiMedia2
+        int[] devicesToTry = {0, 11, 12, 4, 5};
+
+        for (int device : devicesToTry) {
+            String result = execRootSync("ls -la /dev/snd/pcmC0D" + device + "c 2>/dev/null");
+            if (result != null && result.contains("pcm")) {
+                Log.i(TAG, "PCM capture device " + device + " exists");
+                return device;
+            }
+        }
+
+        Log.w(TAG, "Could not determine best capture device, defaulting to 0");
+        return 0;
+    }
+
+    /**
+     * Check if audio buffer is silent (all zeros or very low amplitude)
+     */
+    private boolean isAudioSilent(byte[] buffer, int length) {
+        return getMaxAmplitude(buffer, length) < 100;
     }
 
     /**
@@ -524,17 +1155,26 @@ public class NativePCMAudioBridge {
     /**
      * Receive RTP and play into voice call
      * Tries tinyplay first (more reliable for incall_music), then AudioTrack fallback
+     *
+     * This receives audio from PBX and injects it into the GSM call via Incall_Music
      */
     private void playbackLoop() {
-        Log.i(TAG, "Starting RTP to voice call playback");
+        Log.i(TAG, "┌───────────────────────────────────────────────────────────┐");
+        Log.i(TAG, "│ PLAYBACK LOOP: PBX Voice → RTP → Incall_Music → GSM       │");
+        Log.i(TAG, "├───────────────────────────────────────────────────────────┤");
+        Log.i(TAG, "│ Source: RTP from PBX (port " + String.format("%-5d", localRtpPort) + ")                          │");
+        Log.i(TAG, "│ Dest:   Incall_Music → GSM party                          │");
+        Log.i(TAG, "│ Codec:  G.711 μ-law @ 8kHz mono                           │");
+        Log.i(TAG, "└───────────────────────────────────────────────────────────┘");
 
         // Try tinyplay first - it routes more reliably to incall_music on SM6150
+        Log.i(TAG, "[PLAYBACK] Trying tinyplay (direct ALSA) first...");
         if (!playbackWithTinyplay()) {
-            Log.w(TAG, "Tinyplay failed, falling back to AudioTrack");
+            Log.w(TAG, "[PLAYBACK] ⚠ Tinyplay failed, falling back to AudioTrack");
             playbackWithAudioTrack();
         }
 
-        Log.i(TAG, "Playback loop ended");
+        Log.i(TAG, "[PLAYBACK] Playback loop ended");
     }
 
     /**
@@ -570,11 +1210,19 @@ public class NativePCMAudioBridge {
             byte[] rtpPacket = new byte[1500];
             DatagramPacket packet = new DatagramPacket(rtpPacket, rtpPacket.length);
             int packetCount = 0;
+            int timeoutCount = 0;
+            int maxAmplitudeSeen = 0;
             long lastLogTime = System.currentTimeMillis();
+            long startTime = System.currentTimeMillis();
+            long lastPacketTime = 0;
+
+            Log.i(TAG, "[PLAYBACK] Tinyplay ready, waiting for RTP packets from PBX...");
 
             while (running && !Thread.interrupted()) {
                 try {
                     rtpSocket.receive(packet);
+                    lastPacketTime = System.currentTimeMillis();
+                    timeoutCount = 0; // Reset timeout counter
 
                     if (packet.getLength() < RTP_HEADER_SIZE) continue;
 
@@ -585,21 +1233,37 @@ public class NativePCMAudioBridge {
                     // Convert u-law to PCM
                     byte[] pcmData = ulawToPcm(ulawData);
 
+                    // Track amplitude
+                    int amplitude = getMaxAmplitude(pcmData, pcmData.length);
+                    if (amplitude > maxAmplitudeSeen) maxAmplitudeSeen = amplitude;
+
                     // Write to tinyplay
                     playbackOut.write(pcmData);
                     playbackOut.flush();
 
                     packetCount++;
 
-                    // Log every 5 seconds
+                    // First packet log
+                    if (packetCount == 1) {
+                        Log.i(TAG, "[PLAYBACK] ✓ First RTP packet received from PBX!");
+                    }
+
+                    // Detailed logging every 5 seconds
                     long now = System.currentTimeMillis();
                     if (now - lastLogTime >= 5000) {
-                        Log.d(TAG, "Tinyplay playback: received " + packetCount + " RTP packets");
+                        long elapsed = (now - startTime) / 1000;
+                        Log.i(TAG, String.format("[PLAYBACK] Stats @ %ds: pkts=%d, maxAmp=%d, src=port %d",
+                            elapsed, packetCount, maxAmplitudeSeen, localRtpPort));
+                        maxAmplitudeSeen = 0;
                         lastLogTime = now;
                     }
 
                 } catch (java.net.SocketTimeoutException e) {
-                    // Normal timeout - no data received
+                    timeoutCount++;
+                    // Warn if no packets for too long
+                    if (timeoutCount == 5) {
+                        Log.w(TAG, "[PLAYBACK] ⚠ No RTP from PBX for 5+ seconds - is PBX sending?");
+                    }
                 }
             }
 

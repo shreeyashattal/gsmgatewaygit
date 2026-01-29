@@ -1,214 +1,248 @@
-import React from 'react';
-import { BridgeStatus, GsmStatus, CallState } from '../types';
+import React, { useEffect, useState } from 'react';
 import { daemon } from '../services/GatewayDaemon';
-import { ICONS } from '../constants';
+import { 
+  StatusBadge, 
+  SignalIndicator, 
+  CallDirectionIcon, 
+  RTPMetricsCard, 
+  TrunkStatusCard 
+} from './shared';
+import { ICONS, APP_VERSION } from '../constants';
+import { ActiveCall, SIPRegistrationState } from '../types';
 
+/**
+ * Modern Dashboard for GSM-SIP Gateway
+ * Shows real-time monitoring of dual SIM trunks and active calls
+ */
 const Dashboard: React.FC = () => {
-  const { metrics, callStates, config, bridgeStatus } = daemon.state;
+  const { metrics, config, activeCalls } = daemon.state;
+  const [expandedCall, setExpandedCall] = useState<string | null>(null);
 
-  const renderSignalTowers = (signal: number) => {
-    // Convert signal (-110 to -50 range) to 0-5 bars
-    const bars = Math.max(0, Math.min(5, Math.floor((signal + 110) / 12)));
-    return (
-      <div className="flex items-end gap-[2px] h-4">
-        {[1, 2, 3, 4, 5].map((b) => (
-          <div
-            key={b}
-            className={`w-1.5 rounded-t-[1px] transition-all duration-300 ${b <= bars ? (bars > 3 ? 'bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.6)]' : 'bg-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.4)]') : 'bg-white/5'}`}
-            style={{ height: `${b * 20}%` }}
-          />
-        ))}
-      </div>
-    );
+  // Format call duration
+  const formatDuration = (durationSeconds: number) => {
+    const hours = Math.floor(durationSeconds / 3600);
+    const minutes = Math.floor((durationSeconds % 3600) / 60);
+    const seconds = durationSeconds % 60;
+    
+    if (hours > 0) return `${hours}h ${minutes}m ${seconds}s`;
+    if (minutes > 0) return `${minutes}m ${seconds}s`;
+    return `${seconds}s`;
   };
 
-  const getQualityLabel = (signal: number) => {
-    if (signal >= -70) return 'EXCELLENT';
-    if (signal >= -85) return 'STABLE';
-    if (signal >= -100) return 'FAIR';
-    return 'POOR';
+  // Format timestamp to time string
+  const formatTimeString = (timestamp: number) => {
+    const date = new Date(timestamp);
+    return date.toLocaleTimeString();
   };
 
-  const getBridgeStatusColor = () => {
-    switch (bridgeStatus) {
-      case BridgeStatus.CONNECTED: return 'text-green-400';
-      case BridgeStatus.CONNECTING: return 'text-yellow-400';
-      case BridgeStatus.ERROR: return 'text-red-400';
-      default: return 'text-gray-400';
-    }
-  };
-
-  const getBridgeStatusText = () => {
-    switch (bridgeStatus) {
-      case BridgeStatus.CONNECTED: return 'CONNECTED';
-      case BridgeStatus.CONNECTING: return 'CONNECTING...';
-      case BridgeStatus.ERROR: return 'ERROR';
-      default: return 'DISCONNECTED';
-    }
-  };
+  const hasActiveCalls = (activeCalls[0] !== null) || (activeCalls[1] !== null);
 
   return (
-    <div className="space-y-4">
-      {/* Asterisk AMI Status Bar */}
-      <div className="bg-[#080808] border border-white/10 rounded-2xl p-4 flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className={`w-2 h-2 rounded-full ${bridgeStatus === BridgeStatus.CONNECTED ? 'bg-green-500 shadow-[0_0_12px_rgba(34,197,94,0.8)]' : bridgeStatus === BridgeStatus.CONNECTING ? 'bg-yellow-500 animate-pulse' : 'bg-gray-600'}`} />
-          <div>
-            <p className="text-[9px] font-black text-gray-500 uppercase tracking-widest">Asterisk AMI</p>
-            <p className="text-xs font-mono text-blue-400">127.0.0.1:5038</p>
-          </div>
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex justify-between items-start">
+        <div>
+          <h1 className="text-2xl font-black text-white tracking-tight">Gateway Dashboard</h1>
+          <p className="text-xs text-gray-400 font-mono mt-1">v{APP_VERSION}</p>
         </div>
-        <span className={`text-[10px] font-black ${getBridgeStatusColor()}`}>
-          {getBridgeStatusText()}
-        </span>
+        <div className="text-right">
+          <p className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">Uptime</p>
+          <p className="text-sm font-mono text-blue-400">{Math.floor(metrics.uptime / 1000)}s</p>
+        </div>
       </div>
 
-      {/* SIM Channels */}
+      {/* SIM Trunk Overview - Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {[0, 1].map((slot) => {
           const simMetrics = metrics.sims[slot];
-          const isDetected = simMetrics.status !== GsmStatus.NOT_DETECTED;
           const channel = config.channels[slot];
-          const isEnabled = channel.enabled;
-          const isBusy = callStates[slot] !== CallState.IDLE;
+          const isDetected = simMetrics.carrier && simMetrics.carrier !== 'Empty';
 
-          // Hide SIM slot 2 if not detected or not populated
-          if (slot === 1 && (!isDetected || metrics.slotCount < 2 || (!simMetrics.carrier || simMetrics.carrier === "Empty" || simMetrics.carrier === "No SIM"))) {
+          // Hide SIM2 if not detected
+          if (slot === 1 && (!isDetected || metrics.slotCount < 2)) {
             return null;
           }
 
           return (
-            <div key={slot} className={`relative transition-all duration-500 ${isEnabled ? 'opacity-100' : 'opacity-70 scale-[0.99]'}`}>
-              {/* Status Indicator Glow */}
-              {isEnabled && (
-                <div className={`absolute -inset-[1px] rounded-[32px] blur-lg transition-opacity duration-1000 ${isBusy ? 'bg-green-500/10' : 'bg-blue-500/10'}`} />
-              )}
-
-              <div className={`relative bg-[#080808] border rounded-[32px] p-6 space-y-5 shadow-2xl transition-all ${isEnabled ? 'border-white/10' : 'border-white/5'}`}>
-
-                {/* Header: Carrier & Main Toggle */}
-                <div className="flex justify-between items-start">
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-2">
-                      <div className={`w-2 h-2 rounded-full ${isEnabled ? 'bg-blue-500 shadow-[0_0_12px_rgba(59,130,246,0.8)]' : 'bg-gray-800'}`} />
-                      <span className="text-[9px] font-black text-gray-500 uppercase tracking-widest">SIM {slot + 1} Channel</span>
-                    </div>
-                    <h2 className="text-xl font-black text-white tracking-tight">{simMetrics.carrier || 'Searching...'}</h2>
-                    <p className="text-[11px] font-mono text-blue-400 font-bold tracking-tight">{simMetrics.phoneNumber || '+00 00000 00000'}</p>
-                  </div>
-
-                  <button
-                    onClick={() => daemon.toggleChannel(slot as 0 | 1)}
-                    className={`px-5 py-2 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all ${isEnabled ? 'bg-red-500/10 text-red-500 border border-red-500/20 hover:bg-red-500/20' : 'bg-blue-600 text-white shadow-xl shadow-blue-900/40 hover:bg-blue-500'}`}
-                  >
-                    {isEnabled ? 'Disable' : 'Enable'}
-                  </button>
-                </div>
-
-                {/* Main Status Grid */}
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="bg-white/[0.03] border border-white/5 rounded-2xl p-4 flex flex-col justify-between h-20">
-                    <div className="flex items-center justify-between">
-                      <p className="text-[8px] font-black text-gray-500 uppercase tracking-widest">Network Signal</p>
-                      <span className={`text-[8px] font-black px-2 py-0.5 rounded-full ${
-                        simMetrics.networkType === '5G' ? 'bg-purple-500/20 text-purple-400' :
-                        simMetrics.networkType === 'LTE' ? 'bg-blue-500/20 text-blue-400' :
-                        simMetrics.connectionType === 'VoWiFi' ? 'bg-green-500/20 text-green-400' :
-                        'bg-gray-500/20 text-gray-400'
-                      }`}>
-                        {simMetrics.connectionType === 'VoWiFi' ? 'VoWiFi' : simMetrics.networkType || 'Unknown'}
-                      </span>
-                    </div>
-                    <div className="flex items-end justify-between">
-                      <span className={`text-[10px] font-black tracking-tighter ${simMetrics.radioSignal >= -85 ? 'text-blue-400' : 'text-amber-500'}`}>
-                        {simMetrics.radioSignal > -110 ? `${simMetrics.radioSignal} dBm` : getQualityLabel(simMetrics.radioSignal)}
-                      </span>
-                      {renderSignalTowers(simMetrics.radioSignal)}
-                    </div>
-                  </div>
-
-                  <div className="bg-white/[0.03] border border-white/5 rounded-2xl p-4 flex flex-col justify-between h-20">
-                    <p className="text-[8px] font-black text-gray-500 uppercase tracking-widest">Channel Status</p>
-                    <div className="flex items-center gap-2">
-                      {isEnabled && bridgeStatus === BridgeStatus.CONNECTED ? (
-                        <>
-                          <ICONS.Activity className="text-green-400 w-4 h-4" />
-                          <span className="text-[10px] font-black text-green-400">READY</span>
-                        </>
-                      ) : isEnabled ? (
-                        <>
-                          <ICONS.Cog className="text-yellow-400 w-4 h-4" />
-                          <span className="text-[10px] font-black text-yellow-400">WAITING</span>
-                        </>
-                      ) : (
-                        <>
-                          <ICONS.Cog className="text-gray-400 w-4 h-4" />
-                          <span className="text-[10px] font-black text-gray-400">DISABLED</span>
-                        </>
-                      )}
-                    </div>
-                  </div>
-                </div>
-
-                {/* Channel Config Readout */}
-                <div className="bg-black/40 border border-white/5 rounded-2xl p-4 space-y-2">
-                  <div className="flex justify-between items-center text-[10px]">
-                    <span className="text-gray-600 font-bold uppercase tracking-widest">Context</span>
-                    <span className="text-gray-300 font-mono">{channel.asteriskContext}</span>
-                  </div>
-                  <div className="flex justify-between items-center text-[10px]">
-                    <span className="text-gray-600 font-bold uppercase tracking-widest">Extension</span>
-                    <span className="text-gray-300 font-mono">{channel.defaultExtension}</span>
-                  </div>
-                  <div className="flex justify-between items-center text-[10px]">
-                    <span className="text-gray-600 font-bold uppercase tracking-widest">RTP Port</span>
-                    <span className="text-gray-300 font-mono">{channel.rtpPort}</span>
-                  </div>
-                </div>
-
-                {/* Test Controls */}
-                {isEnabled && bridgeStatus === BridgeStatus.CONNECTED && (
-                  <div className="pt-2 grid grid-cols-2 gap-2 animate-in fade-in slide-in-from-bottom-2 duration-500">
-                    <button
-                      onClick={() => daemon.handleIncomingGsm(slot as 0 | 1, simMetrics.phoneNumber || '+1234567890')}
-                      disabled={isBusy}
-                      className="w-full py-3.5 bg-blue-500/5 hover:bg-blue-500/10 border border-blue-500/20 rounded-2xl text-[10px] font-black uppercase tracking-widest text-blue-400 transition-all disabled:opacity-30 disabled:grayscale flex items-center justify-center gap-3"
-                    >
-                      {isBusy ? (
-                        <span className="flex items-center gap-2 text-green-400 animate-pulse">
-                          <div className="w-2 h-2 bg-green-500 rounded-full" />
-                          BUSY
-                        </span>
-                      ) : (
-                        <>
-                          <ICONS.Phone className="w-3 h-3" />
-                          Sim GSM In
-                        </>
-                      )}
-                    </button>
-                    <button
-                      onClick={() => daemon.handleAsteriskToGsmCall(slot as 0 | 1, '+1234567890', `test-${Date.now()}`)}
-                      disabled={isBusy}
-                      className="w-full py-3.5 bg-purple-500/5 hover:bg-purple-500/10 border border-purple-500/20 rounded-2xl text-[10px] font-black uppercase tracking-widest text-purple-400 transition-all disabled:opacity-30 disabled:grayscale flex items-center justify-center gap-3"
-                    >
-                      {isBusy ? (
-                        <span className="flex items-center gap-2 text-green-400 animate-pulse">
-                          <div className="w-2 h-2 bg-green-500 rounded-full" />
-                          BUSY
-                        </span>
-                      ) : (
-                        <>
-                          <ICONS.Cog className="w-3 h-3" />
-                          Sim AMI Out
-                        </>
-                      )}
-                    </button>
-                  </div>
-                )}
-              </div>
-            </div>
+            <TrunkStatusCard
+              key={slot}
+              simSlot={slot as 0 | 1}
+              registered={simMetrics.sipRegistrationState === SIPRegistrationState.REGISTERED}
+              registering={simMetrics.sipRegistrationState === SIPRegistrationState.REGISTERING}
+              lastRegisteredTime={simMetrics.lastRegisteredTime}
+              nextRegisterTime={simMetrics.nextRegisterTime}
+              carrier={simMetrics.carrier}
+              signal={simMetrics.radioSignal}
+              networkType={simMetrics.networkType}
+              phoneNumber={simMetrics.phoneNumber}
+              sipUsername={channel.sipUsername}
+              pbxHost={channel.pbxHost}
+              pbxPort={channel.pbxPort}
+              onRefreshRegister={() => {
+                // TODO: Implement refresh registration
+                console.log(`Refreshing SIM${slot} registration`);
+              }}
+            />
           );
         })}
+      </div>
+
+      {/* Active Calls Section */}
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <h2 className="text-xs font-black uppercase tracking-widest text-gray-300 flex items-center gap-2">
+            <ICONS.Phone className="w-4 h-4 text-blue-400" />
+            Active Calls
+            {hasActiveCalls && (
+              <span className="ml-auto text-[10px] font-mono bg-green-500/20 text-green-400 px-2 py-1 rounded">
+                {(activeCalls[0] ? 1 : 0) + (activeCalls[1] ? 1 : 0)} Active
+              </span>
+            )}
+          </h2>
+        </div>
+
+        {hasActiveCalls ? (
+          <div className="space-y-2">
+            {[0, 1].map((slot) => {
+              const call = activeCalls[slot];
+              if (!call) return null;
+
+              const isExpanded = expandedCall === call.id;
+
+              return (
+                <div
+                  key={call.id}
+                  className="border border-green-500/30 bg-green-500/5 rounded-2xl p-4 space-y-3 cursor-pointer transition-all hover:border-green-500/50"
+                  onClick={() => setExpandedCall(isExpanded ? null : call.id)}
+                >
+                  {/* Call Header */}
+                  <div className="flex justify-between items-start gap-4">
+                    <div className="flex-1 space-y-2">
+                      <div className="flex items-center gap-3">
+                        <CallDirectionIcon direction={call.direction} size="md" showLabel={false} />
+                        <div className="flex-1">
+                          <div className="flex items-baseline gap-2">
+                            <p className="text-sm font-bold text-white">
+                              {call.direction === 'GSM_TO_SIP' ? call.gsmNumber : call.gsmNumber}
+                            </p>
+                            <p className="text-[10px] font-mono text-gray-500">
+                              SIM {call.simSlot + 1} • {formatDuration(call.durationSeconds)}
+                            </p>
+                          </div>
+                          <p className="text-[9px] text-gray-400 font-mono mt-1">
+                            Call ID: {call.sipCallId}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Quick Hangup Button */}
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        daemon.terminateCall(call.simSlot, 'USER_REQUEST');
+                      }}
+                      className="p-2 bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 rounded-lg text-red-400 transition-all"
+                    >
+                      <ICONS.HangUp className="w-4 h-4" />
+                    </button>
+                  </div>
+
+                  {/* Expanded Details */}
+                  {isExpanded && (
+                    <div className="pt-3 border-t border-green-500/20 space-y-3 animate-in fade-in slide-in-from-top-2">
+                      {/* RTP Metrics */}
+                      <RTPMetricsCard
+                        jitterMs={call.audioMetrics.jitter}
+                        packetLoss={call.audioMetrics.packetLoss || 0}
+                        latencyMs={call.audioMetrics.latency}
+                        bitrateKbps={64} // G.711
+                        packetsRx={call.audioMetrics.rxPackets}
+                        packetsTx={call.audioMetrics.txPackets}
+                      />
+
+                      {/* Call Details Grid */}
+                      <div className="grid grid-cols-2 gap-3 text-[9px]">
+                        <div className="bg-black/30 rounded-lg p-2 space-y-1">
+                          <p className="text-gray-500 font-bold uppercase tracking-widest">Call Direction</p>
+                          <p className="text-gray-300 font-mono">
+                            {call.direction === 'GSM_TO_SIP' ? 'Incoming' : 'Outgoing'}
+                          </p>
+                        </div>
+                        <div className="bg-black/30 rounded-lg p-2 space-y-1">
+                          <p className="text-gray-500 font-bold uppercase tracking-widest">Started</p>
+                          <p className="text-gray-300 font-mono">{formatTimeString(call.startTime)}</p>
+                        </div>
+                        <div className="bg-black/30 rounded-lg p-2 space-y-1">
+                          <p className="text-gray-500 font-bold uppercase tracking-widest">Buffer</p>
+                          <p className={`font-mono ${call.audioMetrics.bufferDepth > 200 ? 'text-amber-400' : 'text-green-400'}`}>
+                            {call.audioMetrics.bufferDepth}ms
+                          </p>
+                        </div>
+                        <div className="bg-black/30 rounded-lg p-2 space-y-1">
+                          <p className="text-gray-500 font-bold uppercase tracking-widest">Underruns</p>
+                          <p className={`font-mono ${call.audioMetrics.underruns && call.audioMetrics.underruns > 0 ? 'text-red-400' : 'text-green-400'}`}>
+                            {call.audioMetrics.underruns || 0}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="border border-white/10 rounded-2xl p-6 text-center">
+            <ICONS.Phone className="w-8 h-8 text-gray-600 mx-auto mb-2" />
+            <p className="text-sm text-gray-400 font-mono">No active calls</p>
+          </div>
+        )}
+      </div>
+
+      {/* System Health */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="bg-[#080808] border border-white/10 rounded-xl p-3 space-y-2">
+          <p className="text-[8px] font-bold text-gray-500 uppercase tracking-widest">CPU Usage</p>
+          <div className="space-y-1">
+            <p className="text-lg font-black text-white">{Math.round(metrics.cpuUsage)}%</p>
+            <div className="w-full bg-white/5 rounded-full h-1 overflow-hidden">
+              <div 
+                className="bg-blue-500 h-full transition-all"
+                style={{ width: `${metrics.cpuUsage}%` }}
+              />
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-[#080808] border border-white/10 rounded-xl p-3 space-y-2">
+          <p className="text-[8px] font-bold text-gray-500 uppercase tracking-widest">Memory</p>
+          <div className="space-y-1">
+            <p className="text-lg font-black text-white">{Math.round(metrics.memUsage)}%</p>
+            <div className="w-full bg-white/5 rounded-full h-1 overflow-hidden">
+              <div 
+                className="bg-purple-500 h-full transition-all"
+                style={{ width: `${metrics.memUsage}%` }}
+              />
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-[#080808] border border-white/10 rounded-xl p-3 space-y-2">
+          <p className="text-[8px] font-bold text-gray-500 uppercase tracking-widest">Temperature</p>
+          <p className="text-lg font-black text-white">{metrics.temp}°C</p>
+          <p className={`text-[8px] font-mono ${metrics.temp > 60 ? 'text-red-400' : metrics.temp > 50 ? 'text-amber-400' : 'text-green-400'}`}>
+            {metrics.temp > 60 ? 'HIGH' : metrics.temp > 50 ? 'WARM' : 'NORMAL'}
+          </p>
+        </div>
+
+        <div className="bg-[#080808] border border-white/10 rounded-xl p-3 space-y-2">
+          <p className="text-[8px] font-bold text-gray-500 uppercase tracking-widest">Processor</p>
+          <p className="text-sm font-black text-white">{metrics.processor}</p>
+          <p className={`text-[8px] font-mono ${metrics.isRooted ? 'text-green-400' : 'text-red-400'}`}>
+            {metrics.isRooted ? 'Rooted' : 'Not Rooted'}
+          </p>
+        </div>
       </div>
     </div>
   );

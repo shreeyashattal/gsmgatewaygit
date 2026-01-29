@@ -1,35 +1,55 @@
 package com.shreeyash.gateway;
 
+import android.Manifest;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.database.Cursor;
+import android.net.Uri;
 import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
+import android.provider.CallLog;
 import android.telephony.SubscriptionManager;
 import android.telephony.TelephonyManager;
 import android.util.Log;
 
+import androidx.core.content.ContextCompat;
+
 /**
  * Receives phone state changes for BOTH SIM slots
  * Detects which SIM received the call and notifies GatewayService
+ *
+ * NOTE: On Android 10+, READ_CALL_LOG permission is required to get incoming number.
+ * Without it, EXTRA_INCOMING_NUMBER will be null.
  */
 public class CallReceiver extends BroadcastReceiver {
     private static final String TAG = "CallReceiver";
-    
+
     // Track last state per subscription (SIM)
     private static int lastStateSim1 = TelephonyManager.CALL_STATE_IDLE;
     private static int lastStateSim2 = TelephonyManager.CALL_STATE_IDLE;
-    
+
+    // Store incoming number when RINGING (it may not be available at OFFHOOK)
+    private static String pendingNumberSim1 = null;
+    private static String pendingNumberSim2 = null;
+
     @Override
     public void onReceive(Context context, Intent intent) {
         String action = intent.getAction();
-        
+
         if (!TelephonyManager.ACTION_PHONE_STATE_CHANGED.equals(action)) {
             return;
         }
-        
+
         String state = intent.getStringExtra(TelephonyManager.EXTRA_STATE);
         String incomingNumber = intent.getStringExtra(TelephonyManager.EXTRA_INCOMING_NUMBER);
-        
+
+        // Log what we received for debugging
+        Log.d(TAG, "Phone state broadcast: state=" + state + ", number=" +
+              (incomingNumber != null ? incomingNumber : "null (need READ_CALL_LOG permission?)"));
+
         if (state == null) return;
         
         int callState = getCallState(state);
@@ -48,27 +68,37 @@ public class CallReceiver extends BroadcastReceiver {
             stateToString(lastState), stateToString(callState)));
         
         // Detect state transitions
-        if (lastState == TelephonyManager.CALL_STATE_IDLE && 
+        if (lastState == TelephonyManager.CALL_STATE_IDLE &&
             callState == TelephonyManager.CALL_STATE_RINGING) {
-            // Incoming call
+            // Incoming call - store the number (it may not be available later)
+            if (simSlot == 1) {
+                pendingNumberSim1 = incomingNumber;
+            } else {
+                pendingNumberSim2 = incomingNumber;
+            }
             handleIncomingCall(context, simSlot, incomingNumber);
-            
-        } else if (lastState == TelephonyManager.CALL_STATE_RINGING && 
+
+        } else if (lastState == TelephonyManager.CALL_STATE_RINGING &&
                    callState == TelephonyManager.CALL_STATE_OFFHOOK) {
             // Incoming call answered
             handleCallAnswered(context, simSlot);
-            
-        } else if (lastState == TelephonyManager.CALL_STATE_IDLE && 
+
+        } else if (lastState == TelephonyManager.CALL_STATE_IDLE &&
                    callState == TelephonyManager.CALL_STATE_OFFHOOK) {
             // Outgoing call connected
             handleCallAnswered(context, simSlot);
-            
-        } else if (lastState != TelephonyManager.CALL_STATE_IDLE && 
+
+        } else if (lastState != TelephonyManager.CALL_STATE_IDLE &&
                    callState == TelephonyManager.CALL_STATE_IDLE) {
-            // Call ended
+            // Call ended - clear stored number
+            if (simSlot == 1) {
+                pendingNumberSim1 = null;
+            } else {
+                pendingNumberSim2 = null;
+            }
             handleCallEnded(context, simSlot);
         }
-        
+
         // Update last state for this SIM
         if (simSlot == 1) {
             lastStateSim1 = callState;
@@ -142,13 +172,88 @@ public class CallReceiver extends BroadcastReceiver {
     }
     
     private void handleIncomingCall(Context context, int simSlot, String number) {
-        Log.i(TAG, String.format("Incoming call to SIM%d from: %s", simSlot, number));
-        
+        String finalNumber = number;
+
+        // If number is null, check permissions and try call log fallback
+        if (finalNumber == null || finalNumber.isEmpty()) {
+            Log.w(TAG, "Incoming number is null/empty, checking permissions...");
+
+            // Check READ_CALL_LOG permission
+            boolean hasCallLogPermission = ContextCompat.checkSelfPermission(context,
+                Manifest.permission.READ_CALL_LOG) == PackageManager.PERMISSION_GRANTED;
+
+            Log.i(TAG, "READ_CALL_LOG permission: " + (hasCallLogPermission ? "GRANTED" : "DENIED"));
+
+            if (hasCallLogPermission) {
+                // Try to get the number from call log (slightly delayed)
+                Log.i(TAG, "Attempting to get caller ID from call log...");
+                // Schedule a delayed lookup since call log entry might not be written yet
+                final int slot = simSlot;
+                new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                    String callLogNumber = getLastIncomingNumber(context);
+                    if (callLogNumber != null && !callLogNumber.isEmpty()) {
+                        Log.i(TAG, "Got caller ID from call log: " + callLogNumber);
+                        // Update the pending number
+                        if (slot == 1) {
+                            pendingNumberSim1 = callLogNumber;
+                        } else {
+                            pendingNumberSim2 = callLogNumber;
+                        }
+                        // Send update to service
+                        Intent updateIntent = new Intent(context, GatewayService.class);
+                        updateIntent.setAction("UPDATE_CALLER_ID");
+                        updateIntent.putExtra("sim_slot", slot);
+                        updateIntent.putExtra("number", callLogNumber);
+                        context.startService(updateIntent);
+                    }
+                }, 500); // 500ms delay to allow call log to be written
+            } else {
+                Log.e(TAG, "Cannot get caller ID: READ_CALL_LOG permission not granted!");
+                Log.e(TAG, "On Android 10+, this permission is required for incoming number");
+            }
+
+            finalNumber = "Unknown";
+        }
+
+        Log.i(TAG, String.format("Incoming call to SIM%d from: %s", simSlot, finalNumber));
+
         Intent serviceIntent = new Intent(context, GatewayService.class);
         serviceIntent.setAction("INCOMING_GSM_CALL");
         serviceIntent.putExtra("sim_slot", simSlot);
-        serviceIntent.putExtra("number", number);
+        serviceIntent.putExtra("number", finalNumber);
         context.startService(serviceIntent);
+    }
+
+    /**
+     * Get the last incoming call number from call log
+     * Useful as fallback when EXTRA_INCOMING_NUMBER is null
+     */
+    private String getLastIncomingNumber(Context context) {
+        try {
+            Uri uri = CallLog.Calls.CONTENT_URI;
+            String[] projection = {CallLog.Calls.NUMBER, CallLog.Calls.TYPE, CallLog.Calls.DATE};
+            String selection = CallLog.Calls.TYPE + " = ?";
+            String[] selectionArgs = {String.valueOf(CallLog.Calls.INCOMING_TYPE)};
+            String sortOrder = CallLog.Calls.DATE + " DESC LIMIT 1";
+
+            Cursor cursor = context.getContentResolver().query(uri, projection, selection, selectionArgs, sortOrder);
+            if (cursor != null && cursor.moveToFirst()) {
+                String number = cursor.getString(cursor.getColumnIndexOrThrow(CallLog.Calls.NUMBER));
+                long date = cursor.getLong(cursor.getColumnIndexOrThrow(CallLog.Calls.DATE));
+                cursor.close();
+
+                // Only use if it's from the last 30 seconds
+                if (System.currentTimeMillis() - date < 30000) {
+                    return number;
+                }
+            }
+            if (cursor != null) {
+                cursor.close();
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to read call log: " + e.getMessage(), e);
+        }
+        return null;
     }
     
     private void handleCallAnswered(Context context, int simSlot) {

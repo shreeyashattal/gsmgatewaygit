@@ -5,19 +5,30 @@ import android.util.Log;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
+import java.net.SocketTimeoutException;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * SIP Client - User Agent for direct PBX registration
  * Handles SIP signaling for GSM-SIP gateway
+ *
+ * Supports two modes:
+ * 1. Registration mode: Registers with external PBX (Asterisk, FreeSWITCH, etc.)
+ * 2. Trunk mode: Acts as SIP server, PBX registers with us
  */
 public class SIPClient {
     private static final String TAG = "SIPClient";
+
+    // Enable detailed SIP message logging
+    private static final boolean LOG_SIP_MESSAGES = true;
+    private static final boolean LOG_SIP_HEADERS = true;
 
     // Configuration
     private final String pbxHost;
@@ -49,6 +60,21 @@ public class SIPClient {
     private String lastNonce;
     private String lastRealm;
 
+    // Transaction timeouts (RFC 3261)
+    private static final int INVITE_TIMEOUT_MS = 32000;  // Timer B
+    private static final int BYE_TIMEOUT_MS = 5000;
+    private static final int CANCEL_TIMEOUT_MS = 5000;
+    private Map<String, ScheduledFuture<?>> transactionTimers = new ConcurrentHashMap<>();
+
+    // Retransmission intervals (RFC 3261 Timer A)
+    private static final long[] RETRANSMIT_INTERVALS = {500, 1000, 2000, 4000, 4000, 4000};
+    private static final int MAX_RETRANSMITS = 6;
+
+    // Health monitoring
+    private volatile long lastReceivedTime = System.currentTimeMillis();
+    private static final long HEALTH_CHECK_INTERVAL_MS = 30000;
+    private static final long DEAD_THRESHOLD_MS = 90000;
+
     /**
      * SIP call state
      */
@@ -72,8 +98,16 @@ public class SIPClient {
         public int senderPort;
 
         public enum CallState {
-            IDLE, RINGING, ANSWERED, CONFIRMED, TERMINATED
+            IDLE,           // Initial state
+            RINGING,        // 180 Ringing received/sent
+            EARLY_MEDIA,    // 183 Session Progress with SDP
+            ANSWERED,       // 200 OK received/sent
+            CONFIRMED,      // ACK received/sent
+            TERMINATED      // Call ended
         }
+
+        // Store original INVITE for CANCEL support
+        public SIPMessage originalInvite;
     }
 
     /**
@@ -85,6 +119,11 @@ public class SIPClient {
         void onIncomingCall(SIPCall call, String dialedNumber);
         void onCallAnswered(SIPCall call);
         void onCallEnded(SIPCall call);
+
+        // Extended callbacks for production reliability (default implementations for backwards compatibility)
+        default void onEarlyMedia(SIPCall call) {}
+        default void onCallProgress(SIPCall call, int statusCode) {}
+        default void onCallFailed(SIPCall call, int statusCode, String reason) {}
     }
 
     // Trunk mode (no registration, just listen)
@@ -121,18 +160,40 @@ public class SIPClient {
      * Start the SIP client
      */
     public boolean start() {
+        Log.i(TAG, "╔════════════════════════════════════════════════════════════╗");
+        Log.i(TAG, "║              STARTING SIP CLIENT                           ║");
+        Log.i(TAG, "╚════════════════════════════════════════════════════════════╝");
+
         try {
-            sipSocket = new DatagramSocket(localSipPort);
+            // Bind to IPv4 explicitly (0.0.0.0) to ensure we can receive from IPv4 PBX
+            // Without this, Java/Android defaults to IPv6 if available
+            sipSocket = new DatagramSocket(localSipPort, InetAddress.getByName("0.0.0.0"));
+            sipSocket.setSoTimeout(5000);  // 5 second timeout for receive
             running = true;
+
+            Log.i(TAG, "┌─ SIP Configuration:");
+            Log.i(TAG, "│  Local IP:      " + localIp);
+            Log.i(TAG, "│  Local Port:    " + localSipPort);
+            Log.i(TAG, "│  Mode:          " + (trunkMode ? "TRUNK (acting as SIP server)" : "REGISTRATION (client to PBX)"));
+            if (!trunkMode) {
+                Log.i(TAG, "│  PBX Host:      " + pbxHost);
+                Log.i(TAG, "│  PBX Port:      " + pbxPort);
+                Log.i(TAG, "│  Username:      " + username);
+            }
+            Log.i(TAG, "└─────────────────────────────");
 
             // Start receiver thread
             receiverThread = new Thread(this::receiveLoop, "SIP-Receiver");
             receiverThread.start();
+            Log.i(TAG, "[SIP] ✓ Receiver thread started");
+
+            // Start health monitor
+            startHealthMonitor();
+            Log.i(TAG, "[SIP] ✓ Health monitor started");
 
             if (trunkMode) {
                 // In trunk mode, just listen - no registration needed
-                Log.i(TAG, "SIP client started in TRUNK MODE on port " + localSipPort);
-                Log.i(TAG, "Waiting for incoming SIP connections...");
+                Log.i(TAG, "[SIP] Running in TRUNK MODE - waiting for PBX to register with us...");
                 // Mark as "registered" for compatibility (trunk mode is always ready)
                 registered = true;
                 if (eventListener != null) {
@@ -140,7 +201,7 @@ public class SIPClient {
                 }
             } else {
                 // Normal mode - register with PBX
-                Log.i(TAG, "SIP client started on port " + localSipPort + ", registering with " + pbxHost + ":" + pbxPort);
+                Log.i(TAG, "[SIP] Sending REGISTER to " + pbxHost + ":" + pbxPort);
 
                 // Initial registration
                 register();
@@ -149,12 +210,65 @@ public class SIPClient {
                 scheduler.scheduleAtFixedRate(this::register, 50, 50, TimeUnit.SECONDS);
             }
 
+            Log.i(TAG, "╔════════════════════════════════════════════════════════════╗");
+            Log.i(TAG, "║           ✓ SIP CLIENT STARTED SUCCESSFULLY                ║");
+            Log.i(TAG, "╚════════════════════════════════════════════════════════════╝");
             return true;
 
         } catch (Exception e) {
-            Log.e(TAG, "Failed to start SIP client: " + e.getMessage(), e);
+            Log.e(TAG, "❌ FATAL: Failed to start SIP client: " + e.getMessage(), e);
             return false;
         }
+    }
+
+    /**
+     * Log SIP message for debugging
+     */
+    private void logSipMessage(String direction, String message, String remoteAddr, int remotePort) {
+        if (!LOG_SIP_MESSAGES) return;
+
+        String[] lines = message.split("\r\n");
+        String firstLine = lines.length > 0 ? lines[0] : "EMPTY";
+
+        // Determine if request or response
+        boolean isRequest = !firstLine.startsWith("SIP/");
+
+        String arrow = direction.equals("TX") ? ">>>" : "<<<";
+        String icon = direction.equals("TX") ? "📤" : "📥";
+
+        Log.i(TAG, String.format("[SIP] %s %s %s %s:%d",
+            icon, arrow, firstLine, remoteAddr, remotePort));
+
+        if (LOG_SIP_HEADERS) {
+            for (int i = 1; i < lines.length && !lines[i].isEmpty(); i++) {
+                String line = lines[i];
+                // Log important headers
+                if (line.toLowerCase().startsWith("from:") ||
+                    line.toLowerCase().startsWith("to:") ||
+                    line.toLowerCase().startsWith("call-id:") ||
+                    line.toLowerCase().startsWith("cseq:") ||
+                    line.toLowerCase().startsWith("contact:")) {
+                    Log.d(TAG, "[SIP]     " + line);
+                }
+            }
+        }
+    }
+
+    /**
+     * Start health monitoring for connection status
+     */
+    private void startHealthMonitor() {
+        scheduler.scheduleAtFixedRate(() -> {
+            long silenceMs = System.currentTimeMillis() - lastReceivedTime;
+            if (silenceMs > DEAD_THRESHOLD_MS && !activeCalls.isEmpty()) {
+                Log.w(TAG, "No SIP traffic for " + silenceMs + "ms with active calls - possible connection issue");
+                // In registration mode, try re-registering
+                if (!trunkMode && registered) {
+                    Log.i(TAG, "Attempting re-registration due to silence");
+                    register();
+                }
+            }
+        }, HEALTH_CHECK_INTERVAL_MS, HEALTH_CHECK_INTERVAL_MS, TimeUnit.MILLISECONDS);
     }
 
     /**
@@ -270,13 +384,17 @@ public class SIPClient {
                 call.fromHeader = invite.getHeader("from");
                 call.toHeader = invite.getHeader("to");
                 call.remoteUri = "sip:" + toExtension + "@" + destHost;
+                call.originalInvite = invite;  // Store for CANCEL support
 
-                // Send to target
-                String data = invite.toBytes();
-                byte[] bytes = data.getBytes();
+                // Send to target with retransmission
                 InetAddress destAddr = trunkMode ? learnedPbxAddress : InetAddress.getByName(destHost);
-                DatagramPacket packet = new DatagramPacket(bytes, bytes.length, destAddr, destPort);
-                sipSocket.send(packet);
+                call.senderAddress = destAddr;
+                call.senderPort = destPort;
+
+                sendWithRetransmit(invite, call, destAddr, destPort, MAX_RETRANSMITS);
+
+                // Start INVITE timeout timer
+                startInviteTimer(call);
 
                 Log.i(TAG, "Sent INVITE to " + toExtension + " with caller ID: " + displayCallerId + " via " + destHost + ":" + destPort);
 
@@ -314,6 +432,13 @@ public class SIPClient {
                 // Build 200 OK response with SDP
                 call.toTag = SIPMessage.generateTag();
 
+                // IMPORTANT: Update call.toHeader to include our tag for later BYE
+                // This is critical - BYE uses call.toHeader as From when we're the callee
+                if (!call.toHeader.contains("tag=")) {
+                    call.toHeader = call.toHeader + ";tag=" + call.toTag;
+                    Log.d(TAG, "[SIP] Updated toHeader with our tag: " + call.toHeader);
+                }
+
                 StringBuilder sb = new StringBuilder();
                 sb.append("SIP/2.0 200 OK\r\n");
                 // Use original Via header from INVITE
@@ -321,11 +446,7 @@ public class SIPClient {
                     sb.append("Via: ").append(call.viaHeader).append("\r\n");
                 }
                 sb.append("From: ").append(call.fromHeader).append("\r\n");
-                sb.append("To: ").append(call.toHeader);
-                if (!call.toHeader.contains("tag=")) {
-                    sb.append(";tag=").append(call.toTag);
-                }
-                sb.append("\r\n");
+                sb.append("To: ").append(call.toHeader).append("\r\n");
                 sb.append("Call-ID: ").append(call.callId).append("\r\n");
                 sb.append("CSeq: ").append(call.cseq).append(" INVITE\r\n");
                 sb.append("Contact: <sip:").append(username).append("@").append(localIp)
@@ -369,27 +490,121 @@ public class SIPClient {
     }
 
     /**
-     * Hangup a call
+     * Hangup a call - sends CANCEL for unanswered calls, BYE for established calls
      */
     public void hangup(SIPCall call) {
         if (call == null || call.state == SIPCall.CallState.TERMINATED) {
+            Log.d(TAG, "[SIP] hangup() called on null or terminated call");
             return;
         }
 
+        Log.i(TAG, "┌───────────────────────────────────────────────────────────┐");
+        Log.i(TAG, "│ [SIP] 📴 HANGUP INITIATED                                 │");
+        Log.i(TAG, "│ Call State: " + String.format("%-46s", call.state) + " │");
+        Log.i(TAG, "│ Incoming:   " + String.format("%-46s", call.isIncoming) + " │");
+        Log.i(TAG, "└───────────────────────────────────────────────────────────┘");
+
         executor.execute(() -> {
             try {
-                SIPMessage bye = SIPMessage.createBye(
-                    call.callId, call.fromHeader, call.toHeader,
-                    call.remoteUri != null ? call.remoteUri : "sip:" + pbxHost,
-                    localIp, localSipPort, call.cseq++);
+                // Cancel any pending transaction timers
+                cancelTransactionTimer(call.callId);
 
-                sendMessage(bye);
+                // Determine whether to send CANCEL or BYE
+                boolean callNotYetAnswered = (call.state == SIPCall.CallState.IDLE ||
+                                               call.state == SIPCall.CallState.RINGING ||
+                                               call.state == SIPCall.CallState.EARLY_MEDIA);
+
+                if (callNotYetAnswered && !call.isIncoming && call.originalInvite != null) {
+                    // Outgoing call not yet answered - send CANCEL
+                    Log.i(TAG, "[SIP] Sending CANCEL (call not yet answered)...");
+                    SIPMessage cancel = SIPMessage.createCancel(
+                        call.callId, call.fromHeader, call.toHeader,
+                        call.remoteUri != null ? call.remoteUri : "sip:" + pbxHost,
+                        localIp, localSipPort, 1);  // CANCEL uses same CSeq as INVITE
+
+                    // Send to the same destination as the INVITE
+                    if (call.senderAddress != null) {
+                        sendToAddress(cancel, call.senderAddress, call.senderPort);
+                    } else {
+                        sendMessage(cancel);
+                    }
+
+                    Log.i(TAG, "[SIP] ✓ CANCEL sent for unanswered call");
+
+                } else if (call.state == SIPCall.CallState.ANSWERED ||
+                           call.state == SIPCall.CallState.CONFIRMED) {
+                    // Established call - send BYE
+                    Log.i(TAG, "[SIP] Sending BYE (call was established)...");
+
+                    // For BYE, the sender (us) must be in the From header
+                    // For incoming calls, we were the To in the original INVITE, so swap
+                    // For outgoing calls, we were the From, so keep as-is
+                    String byeFromHeader;
+                    String byeToHeader;
+
+                    if (call.isIncoming) {
+                        // We received the INVITE, so we're the To in the original dialog
+                        // In BYE, we become the From (sender)
+                        // NOTE: call.toHeader should already include our tag from answerCall()
+                        byeFromHeader = call.toHeader;  // Our identity (was To in INVITE + our tag)
+                        byeToHeader = call.fromHeader;  // Remote identity (was From in INVITE + their tag)
+                        Log.d(TAG, "[SIP] Swapping From/To for incoming call BYE");
+                        Log.d(TAG, "[SIP] Our toTag: " + call.toTag);
+                    } else {
+                        // We sent the INVITE, so we're already the From
+                        byeFromHeader = call.fromHeader;
+                        byeToHeader = call.toHeader;
+                    }
+
+                    // Log headers for debugging 481 errors
+                    Log.i(TAG, "[SIP] BYE Headers:");
+                    Log.i(TAG, "[SIP]   From: " + byeFromHeader);
+                    Log.i(TAG, "[SIP]   To:   " + byeToHeader);
+                    Log.i(TAG, "[SIP]   Call-ID: " + call.callId);
+
+                    // Verify tags are present (critical for 481 debugging)
+                    if (!byeFromHeader.contains("tag=")) {
+                        Log.w(TAG, "[SIP] ⚠ WARNING: From header missing tag!");
+                    }
+                    if (!byeToHeader.contains("tag=")) {
+                        Log.w(TAG, "[SIP] ⚠ WARNING: To header missing tag!");
+                    }
+
+                    SIPMessage bye = SIPMessage.createBye(
+                        call.callId, byeFromHeader, byeToHeader,
+                        call.remoteUri != null ? call.remoteUri : "sip:" + pbxHost,
+                        localIp, localSipPort, call.cseq++);
+
+                    // Send to the correct destination
+                    if (call.senderAddress != null) {
+                        sendToAddress(bye, call.senderAddress, call.senderPort);
+                    } else {
+                        sendMessage(bye);
+                    }
+
+                    Log.i(TAG, "[SIP] ✓ BYE sent for established call");
+
+                } else if (call.isIncoming && callNotYetAnswered) {
+                    // Incoming call we haven't answered - send 486 Busy Here or 603 Decline
+                    Log.i(TAG, "[SIP] Sending 603 Decline (incoming call not answered)...");
+                    if (call.originalInvite != null) {
+                        SIPMessage decline = SIPMessage.createResponse(call.originalInvite, 603, "Decline");
+                        sendToCall(call, decline);
+                        Log.i(TAG, "[SIP] ✓ 603 Decline sent for incoming call");
+                    }
+                } else {
+                    Log.w(TAG, "[SIP] ⚠ Unhandled hangup case - state=" + call.state + " isIncoming=" + call.isIncoming);
+                }
+
                 call.state = SIPCall.CallState.TERMINATED;
                 activeCalls.remove(call.callId);
-                Log.i(TAG, "Sent BYE for call " + call.callId);
+                Log.i(TAG, "[SIP] ✓ Call cleanup complete. Active calls: " + activeCalls.size());
 
             } catch (Exception e) {
-                Log.e(TAG, "Failed to send BYE: " + e.getMessage(), e);
+                Log.e(TAG, "[SIP] ❌ Failed to hangup call: " + e.getMessage(), e);
+                // Force cleanup even on error
+                call.state = SIPCall.CallState.TERMINATED;
+                activeCalls.remove(call.callId);
             }
         });
     }
@@ -405,9 +620,15 @@ public class SIPClient {
                 DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
                 sipSocket.receive(packet);
 
+                // Update health monitor timestamp
+                lastReceivedTime = System.currentTimeMillis();
+
                 String message = new String(packet.getData(), 0, packet.getLength());
                 handleMessage(message, packet.getAddress(), packet.getPort());
 
+            } catch (SocketTimeoutException e) {
+                // Expected - continue loop (allows periodic checks)
+                continue;
             } catch (Exception e) {
                 if (running) {
                     Log.e(TAG, "Receive error: " + e.getMessage());
@@ -421,9 +642,17 @@ public class SIPClient {
      */
     private void handleMessage(String rawMessage, InetAddress fromAddr, int fromPort) {
         try {
+            // Ignore empty messages (keep-alive packets)
+            if (rawMessage == null || rawMessage.trim().isEmpty()) {
+                return;
+            }
+
+            // Log received message
+            logSipMessage("RX", rawMessage, fromAddr.getHostAddress(), fromPort);
+
             SIPMessage msg = SIPMessage.parse(rawMessage);
             if (msg == null) {
-                Log.w(TAG, "Failed to parse SIP message");
+                Log.d(TAG, "[SIP] Unparseable SIP message from " + fromAddr.getHostAddress());
                 return;
             }
 
@@ -434,7 +663,7 @@ public class SIPClient {
             }
 
         } catch (Exception e) {
-            Log.e(TAG, "Error handling SIP message: " + e.getMessage(), e);
+            Log.e(TAG, "[SIP] ❌ Error handling SIP message: " + e.getMessage(), e);
         }
     }
 
@@ -546,7 +775,13 @@ public class SIPClient {
         String callId = invite.getCallId();
         String dialedNumber = invite.getDialedNumber();
 
-        Log.i(TAG, "Incoming INVITE for: " + dialedNumber + " from " + fromAddr.getHostAddress() + ":" + fromPort);
+        Log.i(TAG, "┌───────────────────────────────────────────────────────────┐");
+        Log.i(TAG, "│ [SIP] 📞 INCOMING INVITE - NEW CALL                       │");
+        Log.i(TAG, "├───────────────────────────────────────────────────────────┤");
+        Log.i(TAG, "│ Dialed Number: " + String.format("%-43s", dialedNumber) + " │");
+        Log.i(TAG, "│ From:          " + String.format("%-43s", fromAddr.getHostAddress() + ":" + fromPort) + " │");
+        Log.i(TAG, "│ Call-ID:       " + String.format("%-43s", callId.length() > 43 ? callId.substring(0, 40) + "..." : callId) + " │");
+        Log.i(TAG, "└───────────────────────────────────────────────────────────┘");
 
         // Parse SDP to get remote RTP info
         SDPParser sdp = new SDPParser();
@@ -569,10 +804,16 @@ public class SIPClient {
         call.senderAddress = fromAddr;
         call.senderPort = fromPort;
         call.cseq = 1;
+        call.originalInvite = invite;  // Store for response generation
+
+        // Log stored headers for debugging
+        Log.d(TAG, "[SIP] Stored From header: " + call.fromHeader);
+        Log.d(TAG, "[SIP] Stored To header: " + call.toHeader);
+        Log.d(TAG, "[SIP] Remote fromTag: " + call.fromTag);
 
         activeCalls.put(callId, call);
 
-        Log.i(TAG, "RTP endpoint from SDP: " + call.remoteRtpAddress + ":" + call.remoteRtpPort);
+        Log.i(TAG, "[SIP] 🎧 Remote RTP endpoint from SDP: " + call.remoteRtpAddress + ":" + call.remoteRtpPort);
 
         // Send 100 Trying
         try {
@@ -620,24 +861,32 @@ public class SIPClient {
         String callId = bye.getCallId();
         SIPCall call = activeCalls.get(callId);
 
+        Log.i(TAG, "┌───────────────────────────────────────────────────────────┐");
+        Log.i(TAG, "│ [SIP] 📴 BYE RECEIVED - CALL ENDING                       │");
+        Log.i(TAG, "│ From: " + String.format("%-52s", fromAddr.getHostAddress() + ":" + fromPort) + " │");
+        Log.i(TAG, "└───────────────────────────────────────────────────────────┘");
+
         // Send 200 OK
         try {
             SIPMessage ok = SIPMessage.createResponse(bye, 200, "OK");
             byte[] bytes = ok.toBytes().getBytes();
             DatagramPacket packet = new DatagramPacket(bytes, bytes.length, fromAddr, fromPort);
             sipSocket.send(packet);
+            Log.i(TAG, "[SIP] ✓ Sent 200 OK for BYE");
         } catch (Exception e) {
-            Log.e(TAG, "Error sending 200 OK for BYE", e);
+            Log.e(TAG, "[SIP] ❌ Error sending 200 OK for BYE: " + e.getMessage(), e);
         }
 
         if (call != null) {
             call.state = SIPCall.CallState.TERMINATED;
             activeCalls.remove(callId);
-            Log.i(TAG, "Call ended by remote: " + callId);
+            Log.i(TAG, "[SIP] ✓ Call terminated by remote party");
 
             if (eventListener != null) {
                 eventListener.onCallEnded(call);
             }
+        } else {
+            Log.w(TAG, "[SIP] ⚠ BYE for unknown call: " + callId);
         }
     }
 
@@ -648,25 +897,33 @@ public class SIPClient {
         String callId = cancel.getCallId();
         SIPCall call = activeCalls.get(callId);
 
+        Log.i(TAG, "┌───────────────────────────────────────────────────────────┐");
+        Log.i(TAG, "│ [SIP] ⛔ CANCEL RECEIVED - CALL CANCELLED                  │");
+        Log.i(TAG, "│ From: " + String.format("%-52s", fromAddr.getHostAddress() + ":" + fromPort) + " │");
+        Log.i(TAG, "└───────────────────────────────────────────────────────────┘");
+
         // Send 200 OK for CANCEL
         try {
             SIPMessage ok = SIPMessage.createResponse(cancel, 200, "OK");
             byte[] bytes = ok.toBytes().getBytes();
             DatagramPacket packet = new DatagramPacket(bytes, bytes.length, fromAddr, fromPort);
             sipSocket.send(packet);
+            Log.i(TAG, "[SIP] ✓ Sent 200 OK for CANCEL");
         } catch (Exception e) {
-            Log.e(TAG, "Error sending 200 OK for CANCEL", e);
+            Log.e(TAG, "[SIP] ❌ Error sending 200 OK for CANCEL: " + e.getMessage(), e);
         }
 
         if (call != null) {
             // Send 487 Request Terminated for the INVITE
             call.state = SIPCall.CallState.TERMINATED;
             activeCalls.remove(callId);
-            Log.i(TAG, "Call cancelled: " + callId);
+            Log.i(TAG, "[SIP] ✓ Call cancelled by remote party");
 
             if (eventListener != null) {
                 eventListener.onCallEnded(call);
             }
+        } else {
+            Log.w(TAG, "[SIP] ⚠ CANCEL for unknown call: " + callId);
         }
     }
 
@@ -753,18 +1010,48 @@ public class SIPClient {
         SIPCall call = activeCalls.get(callId);
 
         if (call == null) {
-            Log.w(TAG, "No call found for INVITE response: " + callId);
+            Log.w(TAG, "[SIP] ⚠ No call found for INVITE response: " + callId);
             return;
         }
 
         if (statusCode >= 100 && statusCode < 200) {
             // Provisional response (100, 180, 183)
-            Log.i(TAG, "Call ringing: " + callId);
-            call.state = SIPCall.CallState.RINGING;
+            String icon = statusCode == 180 ? "🔔" : (statusCode == 183 ? "🎵" : "⏳");
+            Log.i(TAG, "[SIP] " + icon + " Provisional " + statusCode + " " + response.getReasonPhrase() +
+                       " (State: " + call.state + " → " + (statusCode == 183 ? "EARLY_MEDIA" : "RINGING") + ")");
+
+            if (statusCode == 183) {
+                // 183 Session Progress - may contain early media SDP
+                SDPParser sdp = new SDPParser();
+                if (response.getBody() != null && sdp.parse(response.getBody())) {
+                    call.remoteRtpAddress = sdp.getConnectionAddress();
+                    call.remoteRtpPort = sdp.getAudioPort();
+                    call.state = SIPCall.CallState.EARLY_MEDIA;
+                    Log.i(TAG, "[SIP] 🎧 Early media RTP: " + call.remoteRtpAddress + ":" + call.remoteRtpPort);
+
+                    if (eventListener != null) {
+                        eventListener.onEarlyMedia(call);
+                    }
+                } else {
+                    call.state = SIPCall.CallState.RINGING;
+                }
+            } else {
+                call.state = SIPCall.CallState.RINGING;
+            }
+
+            // Notify listener of progress
+            if (eventListener != null) {
+                eventListener.onCallProgress(call, statusCode);
+            }
 
         } else if (statusCode == 200) {
-            // Call answered
-            Log.i(TAG, "Call answered: " + callId);
+            // Call answered - cancel INVITE timer
+            cancelTransactionTimer(callId);
+
+            Log.i(TAG, "┌───────────────────────────────────────────────────────────┐");
+            Log.i(TAG, "│ [SIP] ✅ 200 OK - CALL ANSWERED                            │");
+            Log.i(TAG, "└───────────────────────────────────────────────────────────┘");
+
             call.state = SIPCall.CallState.ANSWERED;
             call.toTag = response.getToTag();
             call.toHeader = response.getHeader("to");
@@ -774,36 +1061,60 @@ public class SIPClient {
             if (response.getBody() != null && sdp.parse(response.getBody())) {
                 call.remoteRtpAddress = sdp.getConnectionAddress();
                 call.remoteRtpPort = sdp.getAudioPort();
+                Log.i(TAG, "[SIP] 🎧 RTP endpoint from 200 OK: " + call.remoteRtpAddress + ":" + call.remoteRtpPort);
             }
 
             // Send ACK
             try {
+                Log.i(TAG, "[SIP] Sending ACK...");
                 SIPMessage ack = SIPMessage.createAck(response, localIp, localSipPort);
-                sendMessage(ack);
+                if (call.senderAddress != null) {
+                    sendToAddress(ack, call.senderAddress, call.senderPort);
+                } else {
+                    sendMessage(ack);
+                }
                 call.state = SIPCall.CallState.CONFIRMED;
+                Log.i(TAG, "[SIP] ✓ Call state: CONFIRMED - ready for audio");
             } catch (Exception e) {
-                Log.e(TAG, "Error sending ACK", e);
+                Log.e(TAG, "[SIP] ❌ Error sending ACK: " + e.getMessage(), e);
             }
 
             if (eventListener != null) {
+                Log.i(TAG, "╔════════════════════════════════════════════════════════════╗");
+                Log.i(TAG, "║ SIP 200 OK RECEIVED - CALLING onCallAnswered()             ║");
+                Log.i(TAG, "║ This should trigger GSM answer                             ║");
+                Log.i(TAG, "╚════════════════════════════════════════════════════════════╝");
                 eventListener.onCallAnswered(call);
+            } else {
+                Log.w(TAG, "⚠️  eventListener is NULL! onCallAnswered will NOT be called!");
             }
 
         } else if (statusCode >= 400) {
-            // Error response
-            Log.e(TAG, "Call failed: " + statusCode + " " + response.getReasonPhrase());
+            // Error response - cancel INVITE timer
+            cancelTransactionTimer(callId);
+
+            Log.e(TAG, "┌───────────────────────────────────────────────────────────┐");
+            Log.e(TAG, "│ [SIP] ❌ CALL FAILED: " + String.format("%-36s", statusCode + " " + response.getReasonPhrase()) + " │");
+            Log.e(TAG, "└───────────────────────────────────────────────────────────┘");
+
             call.state = SIPCall.CallState.TERMINATED;
             activeCalls.remove(callId);
 
             // Send ACK for error responses (required by RFC 3261)
             try {
                 SIPMessage ack = SIPMessage.createAck(response, localIp, localSipPort);
-                sendMessage(ack);
+                if (call.senderAddress != null) {
+                    sendToAddress(ack, call.senderAddress, call.senderPort);
+                } else {
+                    sendMessage(ack);
+                }
+                Log.d(TAG, "[SIP] Sent ACK for error response");
             } catch (Exception e) {
-                Log.e(TAG, "Error sending ACK for error response", e);
+                Log.e(TAG, "[SIP] ❌ Error sending ACK for error response: " + e.getMessage(), e);
             }
 
             if (eventListener != null) {
+                eventListener.onCallFailed(call, statusCode, response.getReasonPhrase());
                 eventListener.onCallEnded(call);
             }
         }
@@ -943,18 +1254,121 @@ public class SIPClient {
             // Trunk mode - use learned PBX address
             destAddr = learnedPbxAddress;
             destPort = learnedPbxPort;
-            Log.d(TAG, "Using learned PBX address: " + destAddr.getHostAddress() + ":" + destPort);
         } else {
-            Log.e(TAG, "Cannot send - no PBX address (neither configured nor learned)");
+            Log.e(TAG, "[SIP] ❌ Cannot send - no PBX address (neither configured nor learned)");
             return;
         }
+
+        // Log outgoing message
+        logSipMessage("TX", data, destAddr.getHostAddress(), destPort);
 
         byte[] bytes = data.getBytes();
         DatagramPacket packet = new DatagramPacket(bytes, bytes.length, destAddr, destPort);
         sipSocket.send(packet);
     }
 
-    // Getters
+    // ==================== TRANSACTION TIMERS ====================
+
+    /**
+     * Start INVITE transaction timer (RFC 3261 Timer B)
+     */
+    private void startInviteTimer(SIPCall call) {
+        ScheduledFuture<?> timer = scheduler.schedule(() -> {
+            if (call.state == SIPCall.CallState.RINGING ||
+                call.state == SIPCall.CallState.EARLY_MEDIA ||
+                call.state == SIPCall.CallState.IDLE) {
+                Log.w(TAG, "INVITE timeout for call " + call.callId);
+                call.state = SIPCall.CallState.TERMINATED;
+                activeCalls.remove(call.callId);
+
+                if (eventListener != null) {
+                    eventListener.onCallFailed(call, 408, "Request Timeout");
+                    eventListener.onCallEnded(call);
+                }
+            }
+        }, INVITE_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+        transactionTimers.put(call.callId, timer);
+    }
+
+    /**
+     * Cancel a transaction timer
+     */
+    private void cancelTransactionTimer(String callId) {
+        ScheduledFuture<?> timer = transactionTimers.remove(callId);
+        if (timer != null) {
+            timer.cancel(false);
+            Log.d(TAG, "Cancelled transaction timer for " + callId);
+        }
+    }
+
+    // ==================== RETRANSMISSION ====================
+
+    /**
+     * Send SIP message with retransmission (RFC 3261 Timer A)
+     */
+    private void sendWithRetransmit(SIPMessage msg, SIPCall call,
+                                    InetAddress destAddr, int destPort, int maxRetries) {
+        final AtomicInteger retryCount = new AtomicInteger(0);
+
+        Runnable retransmitTask = new Runnable() {
+            @Override
+            public void run() {
+                // Stop if call is terminated or answered
+                if (call.state == SIPCall.CallState.TERMINATED ||
+                    call.state == SIPCall.CallState.ANSWERED ||
+                    call.state == SIPCall.CallState.CONFIRMED) {
+                    return;
+                }
+
+                if (retryCount.get() >= maxRetries) {
+                    Log.w(TAG, "Max retransmits reached for " + call.callId);
+                    return;
+                }
+
+                try {
+                    String data = msg.toBytes();
+                    byte[] bytes = data.getBytes();
+                    DatagramPacket packet = new DatagramPacket(bytes, bytes.length, destAddr, destPort);
+                    sipSocket.send(packet);
+
+                    int retry = retryCount.incrementAndGet();
+                    if (retry > 1) {
+                        Log.d(TAG, "Retransmit #" + retry + " for " + msg.getMethod() + " " + call.callId);
+                    }
+
+                    // Schedule next retransmit
+                    if (retry < maxRetries) {
+                        long delay = RETRANSMIT_INTERVALS[Math.min(retry - 1, RETRANSMIT_INTERVALS.length - 1)];
+                        scheduler.schedule(this, delay, TimeUnit.MILLISECONDS);
+                    }
+                } catch (Exception e) {
+                    Log.e(TAG, "Retransmit failed: " + e.getMessage());
+                }
+            }
+        };
+
+        // Start first transmission
+        executor.execute(retransmitTask);
+    }
+
+    // ==================== SEND HELPERS ====================
+
+    /**
+     * Send SIP message to specific address
+     */
+    private void sendToAddress(SIPMessage msg, InetAddress destAddr, int destPort) throws Exception {
+        String data = msg.toBytes();
+
+        // Log outgoing message
+        logSipMessage("TX", data, destAddr.getHostAddress(), destPort);
+
+        byte[] bytes = data.getBytes();
+        DatagramPacket packet = new DatagramPacket(bytes, bytes.length, destAddr, destPort);
+        sipSocket.send(packet);
+    }
+
+    // ==================== GETTERS ====================
+
     public boolean isRegistered() { return registered; }
     public SIPCall getCall(String callId) { return activeCalls.get(callId); }
     public Map<String, SIPCall> getActiveCalls() { return activeCalls; }
